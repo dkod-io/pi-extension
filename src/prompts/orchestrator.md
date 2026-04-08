@@ -72,7 +72,8 @@ unit_attempts: {}           # { "unit-id": attempt_count } — incremented each 
 blocked_units: []           # Units that exceeded MAX_UNIT_ATTEMPTS (3) — not retried
 replan_count: 0             # Number of REPLANs executed this build (max 1)
 review_round: {}            # { "unit_id": round_count } — per-unit review-fix counter, keyed by unit NOT changeset (max 2)
-session_map: {}             # { changeset_id: session_id } — populated from each generator's dk agent connect response, needed for dk agent close
+session_map: {}             # { changeset_id: session_id } — populated from generator reports, needed for dk agent close
+unit_sessions: {}           # { unit_id: session_id } — populated when generator DISPATCHED (before submit), fallback for crash cleanup
 ```
 
 ---
@@ -162,6 +163,9 @@ for each unit in active_units:
 
 Wait for all generators to complete.
 
+**When dispatching each generator**, record `unit_sessions[unit_id] = unit_id` as a placeholder.
+When the generator reports its session_id (from dk_connect), update `unit_sessions[unit_id] = session_id`.
+
 **As each generator completes**, record its session_id and changeset_id in `session_map`, then output a progress line:
 > Generator **[unit-name]** complete — session `[sid]`, changeset `[id]`, self-score [X/5]. Progress: **N/M generators done.**
 
@@ -173,7 +177,11 @@ Before proceeding, verify:
 - [ ] Every report includes a changeset_id
 - [ ] `changeset_ids` has one entry per unit in `active_units`
 
-**If gate fails** -> for each crashed generator that has a recorded changeset_id, call `dk agent close --session $SID` (where $SID = `session_map[changeset_id]`) to release its claims. Then re-dispatch. Do NOT proceed until all have submitted.
+**If gate fails** -> for each crashed generator:
+  - If it has a changeset_id in `session_map`: call `dk agent close --session session_map[changeset_id]`
+  - If it crashed before submit (no changeset_id): use `unit_sessions[unit_id]` to get the session_id, then call `dk agent close --session unit_sessions[unit_id]`
+  - This ensures sessions are always cleaned up, even for pre-submit crashes.
+  Then re-dispatch. Do NOT proceed until all have submitted.
 **If gate passes** -> set `changeset_ids = [...]` and verify `session_map` has an entry for each changeset_id. Output the updated state block:
 > **Gate 2 PASSED** — `changeset_ids: [id1, id2, ...]`, `active_units: [N units]`. Proceeding to Phase 3 (Land).
 
@@ -581,6 +589,7 @@ blocked_units: []                     # Units blocked after MAX_UNIT_ATTEMPTS (3
 replan_count: 0                       # Number of REPLANs executed (max 1 — survives resets)
 review_round: {}                      # { "unit_id": round_count } — per-unit review-fix counter, keyed by unit NOT changeset (max 2)
 session_map: {}                       # { changeset_id: session_id } — needed for dk agent close before re-dispatch
+unit_sessions: {}                     # { unit_id: session_id } — fallback for closing pre-submit crash sessions
 ```
 
 **Self-check before dk push** (run this EVERY time before calling dk push):

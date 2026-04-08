@@ -179,12 +179,14 @@ LOOP while round <= 3:
     fix the files
     round += 1
     if round > 3 -> break
-    dk --json agent submit again
+    response = dk --json agent submit again
+    $CSID = response.changeset_id   # CRITICAL: capture the NEW changeset_id
     continue  (re-check local on the new submission)
 
   # Local is clean — wait for DEEP review
   dk --json agent watch --session $SID  — blocks until done
   dk --json agent review --session $SID --changeset $CSID  → get deep findings + score
+  # NOTE: $CSID must be the LATEST changeset_id from the most recent submit
 
   if score >= 4 AND no severity:"error" findings:
     OUTPUT: "Review complete — score: {score}/5 after {round} round(s)"
@@ -197,7 +199,8 @@ LOOP while round <= 3:
   if round > 3:
     OUTPUT: "Max review rounds reached — final score: {score}/5"
     break
-  dk --json agent submit --session $SID --message "<title>"
+  response = dk --json agent submit --session $SID --message "<title>"
+  $CSID = response.changeset_id   # CRITICAL: capture the NEW changeset_id
   # loop continues — re-check local before waiting for deep again
 
 # If loop exits at round 1 with a clean score (no findings at all):
