@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Read current version and bump patch
+        id: version
+        run: |
+          CURRENT=$(node -p "require('./package.json').version")
+          if [ -z "$CURRENT" ]; then
+            echo "No version found in package.json"
+            exit 1
+          fi
+          echo "current=${CURRENT}" >> "$GITHUB_OUTPUT"
+
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+
+          echo "new=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumping: ${CURRENT} -> ${NEW_VERSION}"
+
+      - name: Update version in package.json
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = process.env.NEW_VERSION;
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          VERIFY=$(node -p "require('./package.json').version")
+          if [ "$VERIFY" != "$NEW_VERSION" ]; then
+            echo "ERROR: Version bump failed. Expected ${NEW_VERSION}, got ${VERIFY}"
+            exit 1
+          fi
+          echo "Version bumped to ${NEW_VERSION}"
+
+      - name: Commit version bump
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          git commit -m "release: v${NEW_VERSION} [skip ci]"
+          git push
+
+      - name: Generate release notes
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            git log --oneline --no-merges | head -20 > /tmp/release-notes.txt
+          else
+            git log --oneline --no-merges "${PREV_TAG}..HEAD" | grep -v "\[skip ci\]" > /tmp/release-notes.txt
+          fi
+          if [ ! -s /tmp/release-notes.txt ]; then
+            echo "Patch release" > /tmp/release-notes.txt
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
+            --notes-file /tmp/release-notes.txt
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm publish --access public

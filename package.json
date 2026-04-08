@@ -2,7 +2,14 @@
   "name": "@dkod/pi",
   "version": "0.1.0",
   "description": "dkod extension for Pi — parallel agent execution with AST-level semantic merging",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package",
+    "dkod",
+    "parallel",
+    "multi-agent",
+    "ast-merge",
+    "code-generation"
+  ],
   "pi": {
     "extensions": ["./src/index.ts"]
   },
@@ -11,12 +18,27 @@
     "email": "hello@dkod.io"
   },
   "homepage": "https://dkod.io",
-  "repository": "https://github.com/dkod-io/pi-extension",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dkod-io/pi-extension.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dkod-io/pi-extension/issues"
+  },
   "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
+  "files": [
+    "src/**/*",
+    "skills/**/*",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.6.0"
   },
   "devDependencies": {
     "typescript": "^5.5.0"
