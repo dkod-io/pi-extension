@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <b>dkod for Pi — one prompt in, working tested PR out.</b>
+  <b>20 agents. One branch. Zero conflicts. Now in Pi.</b>
 </p>
 
 <p align="center">
@@ -29,13 +29,24 @@
 
 ## The Problem
 
-You ask an AI agent to build a full-stack app. It works for 45 minutes. Sequentially. One file at a time. One function at a time.
+Traditional AI agent workflows hit a wall: **Git becomes a bottleneck.**
 
-**AI agents are capable. Your tooling makes them slow.**
+You deploy 3 agents on the same repo. Agent A refactors auth. Agent B adds an endpoint. Agent C writes tests. They all finish in 2 minutes. Then you spend 45 minutes resolving merge conflicts.
+
+Even worse — most tools serialize agents to avoid this. One agent at a time. One PR at a time. Sequential. Slow.
+
+**AI agents are fast. Git-based workflows make them wait in line.**
 
 ## The Fix
 
-This extension brings [dkod](https://dkod.io)'s parallel agent execution to [Pi](https://github.com/badlogic/pi-mono). N generators implement your app simultaneously — each in its own isolated dkod session. dkod's AST-level merge eliminates conflicts. The result: what took 45 minutes now takes 10.
+[dkod](https://dkod.io) replaces the bottleneck — not the agents. This extension brings dkod to [Pi](https://github.com/badlogic/pi-mono):
+
+- **Multiple agents from multiple users** work on the same functions, same files, same repository — simultaneously
+- Each agent gets an **isolated session overlay** (copy-on-write, not a clone or worktree)
+- Changes merge by **function, type, and import** — not by line
+- PRs land with **zero conflicts** in under 60 seconds
+
+The result: **24 minutes becomes 2 minutes. 4 conflicts becomes 0.**
 
 <br>
 
@@ -43,38 +54,46 @@ This extension brings [dkod](https://dkod.io)'s parallel agent execution to [Pi]
 <tr>
 <td width="50%" valign="top">
 
-### Parallel Generators
+### Session Isolation
 
-N Pi RPC subprocesses, each with its own dkod session. All writing code at the same time. Two agents editing different functions in the same file? **No conflict.**
+Each agent gets its own overlay on top of the shared repo. Writes go to the overlay, reads fall through to the base. dkod uses AST-level symbol tracking (via tree-sitter) to understand exactly which functions, classes, and methods each agent touches.
 
-dkod merges at the symbol level — functions, types, classes — not lines.
+**No clones. No worktrees. No locks. No waiting.**
+
+10 agents editing simultaneously, each in their own sandbox.
 
 </td>
 <td width="50%" valign="top">
 
-### Adversarial Evaluation
+### AST-Level Semantic Merge
 
-A skeptical evaluator that actually starts the app, clicks every button, fills every form. Scores each criterion with evidence (screenshots, console output).
+Forget line-based diffs. dkod detects conflicts at the **symbol level** — functions, types, constants.
 
-Defaults to FAIL unless proven PASS.
+Two agents editing different functions in the same file? **No conflict.** Merged in under 50ms.
+
+Two agents rewriting the same function? Caught instantly, with a precise report — not a wall of `<<<<<<<` markers.
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-### Runtime Tool Guard
+### Verification Pipeline
 
-Write, Edit, and Bash file-writes are **blocked at runtime** during generator sessions — enforced via Pi's `tool_call` event hook, not just prompt instructions.
+Every changeset passes through **lint, type-check, and test** gates before it touches main. Automated code review with scoring on every submission.
 
-Generators must use `dk --json agent file-write`. No workarounds.
+Agents get structured failure data — not log dumps — so they fix issues and retry autonomously.
+
+Average time from submission to verified merge: **under 30 seconds.**
 
 </td>
 <td width="50%" valign="top">
 
-### Autonomous Pipeline
+### Autonomous Build Pipeline
 
-Plan. Build. Land. Eval. Ship. Zero human interaction. The harness makes every decision autonomously — framework choice, conflict resolution, fix rounds.
+One prompt in. Working, tested PR out. Zero human interaction.
+
+The [harness](https://github.com/dkod-io/harness) orchestrates: **Planner** decomposes work by symbol, **N Generators** implement in parallel via dkod sessions, **Evaluator** tests the live app via chrome-devtools.
 
 Based on [Anthropic's Planner-Generator-Evaluator research](https://www.anthropic.com/engineering/harness-design-long-running-apps).
 
@@ -112,16 +131,12 @@ That's it. The harness does the rest.
 
 <br>
 
-```bash
-# Plan only (review before building)
-/dkh:plan Build a recipe sharing platform with user profiles and ingredient search
-
-# Evaluate existing code
-/dkh:eval
-
-# Check setup (verify dk CLI + auth)
-/dkod:config
-```
+| Command | Description |
+|---------|-------------|
+| `/dkh <prompt>` | Full autonomous build — plan, build, land, eval, ship |
+| `/dkh:plan <prompt>` | Planning only — produce spec + parallel work units |
+| `/dkh:eval` | Evaluate current application against criteria |
+| `/dkod:config` | Verify dk CLI installation and authentication |
 
 </details>
 
@@ -140,33 +155,52 @@ sequenceDiagram
     participant E as Evaluator
 
     U->>O: /dkh "build a task app"
-    O->>P: expand prompt → spec + work units
-    P-->>O: plan with N units
+    O->>P: expand prompt into spec + work units
+    P-->>O: plan with N parallel units
+
+    Note over G,D: Each generator gets an isolated dkod session
 
     par Generator 1
-        O->>G: RPC subprocess
-        G->>D: dk agent connect + file-write + submit
+        O->>G: Pi RPC subprocess
+        G->>D: connect → file-write → submit
     and Generator 2
-        O->>G: RPC subprocess
-        G->>D: dk agent connect + file-write + submit
+        O->>G: Pi RPC subprocess
+        G->>D: connect → file-write → submit
     and Generator N
-        O->>G: RPC subprocess
-        G->>D: dk agent connect + file-write + submit
+        O->>G: Pi RPC subprocess
+        G->>D: connect → file-write → submit
     end
+
+    Note over D: AST-level merge — zero conflicts
 
     G-->>O: N changesets
-    O->>D: verify + review + approve + merge
+    O->>D: verify → review → approve → merge
 
-    O->>E: start app, test via chrome-devtools
-    E-->>O: eval report (PASS / RETRY / REPLAN)
+    O->>E: start app, test every button via chrome-devtools
+    E-->>O: eval report with scores + evidence
 
     alt PASS
-        O->>D: dk push (PR)
-        D-->>U: GitHub PR
+        O->>D: push PR to GitHub
+        D-->>U: PR with eval results
     else RETRY
         O->>G: re-dispatch failed units with feedback
+    else REPLAN
+        O->>P: structural flaw — re-plan from scratch
     end
 ```
+
+<br>
+
+## Why dkod, Not Git Worktrees?
+
+| | Git worktrees | dkod sessions |
+|---|---|---|
+| **Setup per agent** | Full clone or worktree (~seconds) | Copy-on-write overlay (~ms) |
+| **Merge strategy** | Line-based diff (conflicts on same file) | AST-level symbol merge (conflicts only on same function) |
+| **10 agents, same file** | 10 worktrees, manual conflict resolution | 10 overlays, automatic merge |
+| **Merge time** | Minutes + human review | Under 50ms, automated |
+| **Verification** | Manual CI pipeline | Built-in lint + type-check + test + code review |
+| **Disk usage** | Full copy per agent | Overlay only (changed symbols) |
 
 <br>
 
@@ -176,7 +210,7 @@ sequenceDiagram
 pi-extension/
 ├── src/
 │   ├── index.ts              Extension entry — registers commands + guard
-│   ├── guard.ts              Runtime tool blocker (Write/Edit/git → blocked)
+│   ├── guard.ts              Runtime tool blocker (Write/Edit/git blocked)
 │   ├── parallel.ts           RPC subprocess manager (N generators)
 │   ├── commands/
 │   │   ├── dkh.ts            /dkh — full autonomous pipeline
@@ -195,8 +229,8 @@ pi-extension/
 **Key design decisions:**
 
 - **dk CLI** (`--json` mode) is the sole dkod interface — no HTTP client, no custom tool wrappers
-- **Pi RPC subprocesses** give true OS-level parallelism for generators
-- **Runtime enforcement** via `tool_call` event — not just prompt instructions
+- **Runtime tool enforcement** via Pi's `tool_call` event — generators are blocked from using Write/Edit/Bash-file-writes at the runtime level, not just prompt instructions
+- **Pi RPC subprocesses** give true OS-level parallelism for generators — each subprocess is a full Pi instance with its own dkod session
 - **Agent prompts** adapted from the [dkod harness](https://github.com/dkod-io/harness) for Pi + dk CLI syntax
 
 <br>
@@ -213,7 +247,7 @@ pi-extension/
 
 ## Inspired By
 
-- [dkod: Agent-native code platform](https://dkod.io)
+- [dkod: Agent-native code platform](https://dkod.io) — session isolation + AST merge for AI agents
 - [dkod harness: Autonomous Planner-Generator-Evaluator pipeline](https://github.com/dkod-io/harness)
 - [Anthropic: Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps)
 - [Pi: Terminal AI agent](https://github.com/badlogic/pi-mono)
