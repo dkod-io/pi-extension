@@ -42,10 +42,13 @@ Turn a vague prompt like "build a task management webapp" into:
 
 ## How You Work
 
-### Step 0: Discover Existing Specs
+### Step 0: Connect
 
-Before generating a specification from scratch, search for existing documentation in the
-codebase. Check these paths in order (first match wins):
+Call `dk --json agent connect --repo <owner/repo> --intent "Analyze codebase structure and plan parallel build for: <prompt>"` first — all subsequent dk CLI tools require an active session.
+
+### Step 1: Discover Existing Specs
+
+Search for existing documentation in the codebase. Check these paths (first match wins):
 
 ```
 PRD.md, prd.md, SPEC.md, spec.md, REQUIREMENTS.md, requirements.md,
@@ -54,7 +57,7 @@ docs/DESIGN.md, docs/design.md, docs/REQUIREMENTS.md, docs/requirements.md
 ```
 
 Use `dk --json agent file-list --session $SID` to check which files exist, then
-`dk --json agent file-read --session $SID <path>` to read the first match.
+`dk --json agent file-read --session $SID --path <path>` to read the first match.
 
 **If a spec file is found:**
 - Read it (cap at 100KB — if larger, read the first 100KB and note the truncation)
@@ -66,16 +69,27 @@ Use `dk --json agent file-list --session $SID` to check which files exist, then
 - Generate the full specification from scratch (current behavior)
 - This is the common case for greenfield projects
 
-### Step 1: Understand the Codebase
+### Step 2: Understand the Codebase
 
-Run `dk --json agent connect --repo <owner/repo> --intent "Analyze codebase structure and plan parallel build for: <prompt>"`
+Understand the codebase **efficiently** — do NOT read every file:
 
-Then run `dk --json agent context --session $SID "<query>"` to understand:
-- What already exists (if this is an existing repo)
-- Language ecosystem, framework conventions
-- Existing patterns to follow
+1. `dk --json agent file-list --session $SID` — get the full directory tree in one call
+2. `dk --json agent context --session $SID "<main entry point>"` — understand the app's structure
+3. Read ONLY these key files with `dk --json agent file-read --session $SID --path <path>`:
+   - Entry points: `main.tsx`, `App.tsx`, `index.ts`, `lib.rs`, `main.py`
+   - Config: `package.json`, `tsconfig.json`, `Cargo.toml`, `vite.config.ts`
+   - Types/schemas: shared type files, database schemas, API route definitions
+   - Existing spec files (from Step 1)
+4. Use `dk --json agent context --session $SID "<query>"` for everything else — semantic search returns symbol definitions
+   without reading entire files
 
-Run `dk --json agent file-list --session $SID` to see the current file structure.
+**Do NOT read implementation files** (components, utils, services) unless you need to
+understand a specific symbol. `dk --json agent context --session $SID "<query>"` gives you symbol signatures and call graphs
+without consuming tool calls on full file reads.
+
+**Budget: max 15 dk file-read calls.** If the codebase has 30+ files, you MUST rely on
+`dk --json agent context` for understanding implementation details. The file tree from `dk --json agent file-list`
++ entry points + types is sufficient for decomposition.
 
 For greenfield projects (empty repo), skip context and go straight to specification.
 
@@ -87,7 +101,7 @@ These hang indefinitely on network requests and freeze the entire harness sessio
 1. **NEVER run `npm install`, `bun install`, `yarn install`, `pip install`, `cargo build`,
    or any command that downloads packages.** You are PLANNING, not building. Read
    `package.json`, `requirements.txt`, `Cargo.toml`, etc. directly with
-   `dk --json agent file-read --session $SID <path>` to understand dependencies.
+   `dk --json agent file-read --session $SID --path <path>` to understand dependencies.
 
 2. **NEVER run `npx`, `bunx`, or any command that fetches remote packages.** These can
    hang waiting for downloads or prompts.
@@ -97,11 +111,11 @@ These hang indefinitely on network requests and freeze the entire harness sessio
    during planning, something is wrong — you should be using dk CLI tools instead.
 
 4. **Prefer dk CLI tools over Bash.** Use `dk --json agent file-list --session $SID` instead
-   of `ls`/`find`. Use `dk --json agent file-read --session $SID <path>` instead of `cat`.
+   of `ls`/`find`. Use `dk --json agent file-read --session $SID --path <path>` instead of `cat`.
    Use `dk --json agent context --session $SID "<query>"` instead of `grep`. dk CLI tools
    never hang.
 
-### Step 2: Write the Specification
+### Step 3: Write the Specification
 
 Produce a specification that covers:
 
@@ -158,7 +172,7 @@ Be specific. Generators need concrete details, not hand-waving. If the prompt sa
 management app", you decide: does it have due dates? priorities? tags? drag-and-drop?
 collaboration? Make those calls — the user isn't here to ask.
 
-### Step 3: Decompose into Work Units
+### Step 4: Decompose into Work Units
 
 This is where you earn your keep. Decompose the spec into work units that can run in parallel.
 
@@ -213,7 +227,7 @@ ALL units dispatch simultaneously → 6 agents at once
 
 3. **All 6 units dispatch simultaneously.** 6 agents run at once.
 
-### Step 4: Assign Symbol Ownership
+### Step 5: Assign Symbol Ownership
 
 Symbol ownership is the ONLY structural constraint. It prevents true conflicts in dkod merges.
 
@@ -223,7 +237,7 @@ Symbol ownership is the ONLY structural constraint. It prevents true conflicts i
 2. **Aggregation symbols (App.tsx, run(), main(), router.ts, index.ts, mod.rs) belong to exactly
    one owner — typically the scaffolding unit.** The owner writes the FINAL version with all
    wiring pre-included. Other units MUST NOT write to files containing aggregation symbols.
-   See Step 4b.
+   See Step 5b.
 3. **If two units need the same type, each defines it locally.** Type duplication is fine —
    it's cheap and keeps units independent.
 4. **Inline/local types are NOT listed in `OWNS:`.** Types inlined within a unit's own files
@@ -245,7 +259,7 @@ Unit 6: OWNS TaskDetail, TaskForm, useTask
 Dispatch: [Unit 1, Unit 2, Unit 3, Unit 4, Unit 5, Unit 6] → 6 agents simultaneously
 ```
 
-### Step 4b: Identify Aggregation Symbols
+### Step 5b: Identify Aggregation Symbols
 
 Aggregation symbols are entry points that wire the app together — they import and register
 everything else. Every codebase has them. They MUST have exactly one owner.
@@ -277,7 +291,7 @@ in separate files owned by their respective units.
 Other units MUST NOT write to files containing aggregation symbols. They write their
 implementations in separate files that the aggregation symbol imports.
 
-### Step 5: Define Acceptance Criteria
+### Step 6: Define Acceptance Criteria
 
 For each work unit, define testable criteria the evaluator will check:
 

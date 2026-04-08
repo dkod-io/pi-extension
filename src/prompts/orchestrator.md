@@ -52,6 +52,12 @@ You execute this loop until the application is complete or you hit the 3-round l
 check passes. You CANNOT skip phases. Skipping Phase 4 (Eval) is the most common failure
 mode — guard against it explicitly.**
 
+**CRITICAL: Before EVERY generator re-dispatch**, call `dk agent close --session $SID` on
+the old changeset's session to release its symbol claims. Without this, the new session's
+submit will conflict with the old session's stale claims — the agent will conflict with
+itself. This applies to ALL re-dispatch scenarios: review-fix, crashed generator recovery,
+round transitions, smoke test failures, and zero-merge recovery.
+
 ### State you must track:
 
 ```
@@ -66,6 +72,7 @@ unit_attempts: {}           # { "unit-id": attempt_count } — incremented each 
 blocked_units: []           # Units that exceeded MAX_UNIT_ATTEMPTS (3) — not retried
 replan_count: 0             # Number of REPLANs executed this build (max 1)
 review_round: {}            # { "unit_id": round_count } — per-unit review-fix counter, keyed by unit NOT changeset (max 2)
+session_map: {}             # { changeset_id: session_id } — populated from each generator's dk agent connect response, needed for dk agent close
 ```
 
 ---
@@ -94,6 +101,11 @@ Proceed to Phase 1.
 ---
 
 ### PHASE 1 — PLAN
+
+**Before spawning the planner, output this message to the user:**
+> **Phase 1: Plan** — Spawning the planner agent to analyze the codebase and produce
+> parallel work units. This typically takes 3-5 minutes. Please wait — no action needed
+> until the plan is ready.
 
 Dispatch a single planner via Pi RPC subprocess:
 
@@ -140,7 +152,8 @@ for each unit in active_units:
     prompt: <inject generator.md instructions + spec + this unit +
             "CRITICAL: Use dk agent connect -> dk agent file-write -> dk agent submit ONLY.
              NEVER use Write, Edit, or Bash to create/modify source files.
-             NEVER use git commands. All code goes through dkod.">
+             NEVER use git commands. All code goes through dkod.
+             Report BOTH session_id AND changeset_id when done.">
     capability: generation
     description: "Build: <unit title>"
     name: "generator-<unit-id>"
@@ -149,14 +162,20 @@ for each unit in active_units:
 
 Wait for all generators to complete.
 
+**As each generator completes**, record its session_id and changeset_id in `session_map`, then output a progress line:
+> Generator **[unit-name]** complete — session `[sid]`, changeset `[id]`, self-score [X/5]. Progress: **N/M generators done.**
+
+This keeps the user informed as changesets arrive instead of showing a stale empty state for the entire build phase.
+
 **=== GATE 2 CHECK ===**
 Before proceeding, verify:
 - [ ] Every generator has reported back
 - [ ] Every report includes a changeset_id
 - [ ] `changeset_ids` has one entry per unit in `active_units`
 
-**If gate fails** -> re-dispatch crashed generators. Do NOT proceed until all have submitted.
-**If gate passes** -> set `changeset_ids = [...]`. Proceed to Phase 3.
+**If gate fails** -> for each crashed generator that has a recorded changeset_id, call `dk agent close --session $SID` (where $SID = `session_map[changeset_id]`) to release its claims. Then re-dispatch. Do NOT proceed until all have submitted.
+**If gate passes** -> set `changeset_ids = [...]` and verify `session_map` has an entry for each changeset_id. Output the updated state block:
+> **Gate 2 PASSED** — `changeset_ids: [id1, id2, ...]`, `active_units: [N units]`. Proceeding to Phase 3 (Land).
 
 ---
 
@@ -169,27 +188,31 @@ Before proceeding, verify:
 3. **Approve** — each verified changeset (note: `dk agent approve` is not a CLI command;
    approval may be implicit after verify passes, or handled through the dkod platform)
 4. **Merge sequentially** — `dk --json agent merge --session $SID --changeset $CSID -m "<message>"` each changeset one at a time. Merge order does not matter — all units are independent.
+   **After each merge**, output a progress line:
+   > Merged changeset `[id]` for unit **[name]**. Progress: **N/M merged.**
 
 #### Review Gate (advisory, max 2 rounds)
 
 After dk agent verify for each changeset:
 
-1. Review results come inline with the submit/verify responses. Evaluate them.
+1. Call `dk --json agent review --session $SID --changeset $CSID` to get code review results
 2. Check the LOCAL review results (evaluate conditions in order):
-   - **`review_round[unit_id]` >= 2** -> max rounds reached, proceed to merge anyway (advisory)
-   - **Score >= 3 AND no "error" severity findings** -> proceed to merge
-   - **Score < 3 OR has "error" severity findings** -> re-dispatch generator with review feedback
-3. **Increment `review_round[unit_id]`** by 1, then re-dispatch via Pi RPC subprocess with payload:
+   - **`review_round[unit_id]` >= 2** -> max rounds reached, proceed to approve anyway (advisory)
+   - **Score >= 3 AND no "error" severity findings** -> proceed to approve
+   - **Score < 3 OR has "error" severity findings** -> close the old changeset, then re-dispatch generator with review feedback
+3. **Close the old changeset** before re-dispatch: `dk agent close --session $SID` — this releases symbol claims so the new session won't self-conflict.
+4. **Increment `review_round[unit_id]`** by 1, then re-dispatch via Pi RPC subprocess with payload:
    - Original work unit spec
    - Review findings (copy the review output verbatim as context)
    - Instruction: "Fix these code review findings, then re-submit via dk agent submit"
-4. After generator re-submits with a new changeset_id:
-   a. **Stage** the new changeset_id (do NOT overwrite `changeset_ids` yet — the original verified changeset must remain as fallback)
-   b. **Run `dk --json agent verify`** on the new changeset — re-submitted code must pass lint/type-check/tests
-   c. If dk agent verify fails, keep the original changeset_id in `changeset_ids` (skip to merge after max rounds using the last verified changeset)
-   d. If dk agent verify passes, **commit** the new changeset_id to `changeset_ids` (replacing the old one), and **return to step 2** to re-evaluate the score and findings
-5. **Max 2 review-fix rounds per unit** — enforced by the first condition in step 2
-6. Track `review_round[unit_id]` separately from eval `round` in state — key by unit_id (stable), NOT changeset_id (changes on re-submit)
+5. After generator re-submits with a new session_id and changeset_id:
+   a. **Update `session_map`**: record `session_map[new_changeset_id] = new_session_id` (remove the old entry)
+   b. **Stage** the new changeset_id (do NOT overwrite `changeset_ids` yet — the original verified changeset must remain as fallback)
+   c. **Run `dk --json agent verify`** on the new changeset — re-submitted code must pass lint/type-check/tests
+   d. If dk agent verify fails, call `dk agent close --session $SID` (using the new session_id from `session_map[new_changeset_id]`) to release the new session's claims, then keep the original changeset_id in `changeset_ids` (skip to approve after max rounds using the last verified changeset)
+   e. If dk agent verify passes, **commit** the new changeset_id to `changeset_ids` (replacing the old one), call `dk --json agent review` again, and **return to step 2** to re-evaluate the score and findings
+6. **Max 2 review-fix rounds per unit** — enforced by the first condition in step 2
+7. Track `review_round[unit_id]` separately from eval `round` in state — key by unit_id (stable), NOT changeset_id (changes on re-submit)
 
 Do NOT wait for deep review results — deep review runs asynchronously and is informational only. Only act on local review results which are available immediately after submit.
 
@@ -206,8 +229,11 @@ Before proceeding, verify:
 Partial merge failures are tolerable — the evaluator will catch missing functionality.
 But if ZERO changesets merged, that's a hard block.
 
-**If zero merges** -> re-dispatch generators with error context.
+**If zero merges** -> close all changeset sessions (`dk agent close --session $SID` for each changeset_id using `session_map[changeset_id]`) to release claims, then wipe stale state (`changeset_ids = []`, `session_map = {}`, `merged_commit = null`, `merge_failures = []`), then re-dispatch generators with error context.
 **If some merged** -> update `merged_commit = <hash>`, record `merge_failures`.
+Output the updated state block:
+> **Gate 3 PASSED** — `merged_commit: [hash]`, `merge_failures: [list or empty]`. Proceeding to Phase 4 (Eval).
+
 Proceed to Phase 4. DO NOT PUSH. DO NOT ASK THE USER.
 
 ---
@@ -250,11 +276,14 @@ tokens testing a broken app. Fix the build first.
 - [ ] No fatal JavaScript errors in console (warnings are OK, errors are NOT)
 
 **If smoke test FAILS** -> The app doesn't start or crashes on load. This is a build
-failure, not an eval failure. DO NOT dispatch evaluators. Instead:
+failure, not an eval failure. DO NOT dispatch evaluators. **DO NOT fix code locally
+with Write/Edit/Bash** — all fixes must go through dkod (dk agent connect -> dk agent
+file-write -> dk agent submit -> dk agent verify -> dk agent approve -> dk agent merge ->
+dk push branch -> git checkout -B). Instead:
 - Kill the dev server
 - Treat ALL units as failed with feedback: "App crashes on startup: <error details>"
 - **Execute Round Transition** (see the "Round Transition" block below): increment `round`,
-  wipe `changeset_ids`, `merged_commit`, `merge_failures`, `eval_reports`
+  wipe `changeset_ids`, `session_map`, `merged_commit`, `merge_failures`, `eval_reports`
 - **Check round cap**: if `round >= 3` after incrementing, do NOT re-dispatch.
   Instead, `dk --json push` with "app fails to start after 3 rounds" documented. This matches
   the Phase 5 RETRY round-3 behavior.
@@ -273,6 +302,8 @@ failure, not an eval failure. DO NOT dispatch evaluators. Instead:
 **dk agent verify (Phase 3) is NOT evaluation. It runs lint/type-check/test.**
 **Evaluation means: test with chrome-devtools, score criteria with evidence.**
 **You CANNOT call dk push until eval_reports is populated with REAL evidence.**
+**Do NOT fix TypeScript errors, build errors, or lint issues locally with Write/Edit/Bash.**
+**If the code has errors, go BACK — dispatch a fix generator through dkod.**
 
 The dev server is already running from the smoke test. Do NOT start another one.
 
@@ -295,6 +326,8 @@ for each work_unit in active_units:
     description: "Eval: <unit title>"
     name: "evaluator-<unit-id>"
   // WAIT for this evaluator to complete before dispatching the next
+  // Output progress after each evaluator completes:
+  // > Evaluator **[unit-name]** complete — X/Y criteria passed. Progress: **N/M eval reports collected.**
 
 // After all unit evaluators, run the integration evaluator:
 RPC subprocess: evaluator
@@ -391,9 +424,16 @@ When Phase 5 decides to fix, explicitly reset state before the next round:
 
 ```
 # ROUND TRANSITION — execute this before re-entering Phase 2:
+
+# FIRST: close all old changesets to release symbol claims.
+# Without this, re-dispatched generators will self-conflict.
+for each changeset_id in changeset_ids:
+  dk agent close --session $SID   # where $SID = session_map[changeset_id]
+
 round += 1
 active_units = [failed units from eval, EXCLUDING blocked_units]
 changeset_ids = []          # wiped — new generators will repopulate
+session_map = {}            # wiped — new generators will repopulate
 merged_commit = null        # wiped — new merges will set this
 merge_failures = []         # wiped
 eval_reports = []           # wiped — new evaluators will repopulate
@@ -413,10 +453,16 @@ When Phase 5 chooses REPLAN (and `replan_count == 0`), reset state for a full re
 
 ```
 # REPLAN TRANSITION — execute this before re-entering Phase 1:
+
+# FIRST: close all old changesets to release symbol claims.
+for each changeset_id in changeset_ids:
+  dk agent close --session $SID   # where $SID = session_map[changeset_id]
+
 replan_count += 1           # increment FIRST — survives the reset
 round = 1                   # restart from round 1
 active_units = []           # wiped — new plan will repopulate
 changeset_ids = []          # wiped
+session_map = {}            # wiped
 merged_commit = null        # wiped
 merge_failures = []         # wiped
 eval_reports = []           # wiped
@@ -534,6 +580,7 @@ unit_attempts: {}                     # Cumulative per-unit attempt count
 blocked_units: []                     # Units blocked after MAX_UNIT_ATTEMPTS (3)
 replan_count: 0                       # Number of REPLANs executed (max 1 — survives resets)
 review_round: {}                      # { "unit_id": round_count } — per-unit review-fix counter, keyed by unit NOT changeset (max 2)
+session_map: {}                       # { changeset_id: session_id } — needed for dk agent close before re-dispatch
 ```
 
 **Self-check before dk push** (run this EVERY time before calling dk push):

@@ -71,7 +71,7 @@ Use `dk --json agent context --session $SID "<query>"` to check symbol relations
 - Are types consistent across modules?
 - Are exports matching what consumers import?
 
-### Step 3: Run Verification
+### Step 3: Run Verification and Review
 
 Run `dk --json agent verify --session $SID --changeset $CSID` to run the automated pipeline:
 - Lint checks
@@ -81,9 +81,7 @@ Run `dk --json agent verify --session $SID --changeset $CSID` to run the automat
 
 Record the results. Any verification failure is an automatic criterion failure.
 
-Note: `dk agent review` is not available as a standalone CLI command. Code review results
-are returned inline with submit responses and through the watch event stream. If review
-findings were provided by the orchestrator, incorporate them into your evaluation.
+Run `dk --json agent review --session $SID --changeset $CSID` to check code review findings:
 - If the review score is < 3 or there are "error" severity findings, record them as evidence
 - Unresolved review findings (security issues, logic errors) are criterion failures
 - Review findings with "warning" severity are informational — note them but don't auto-fail
@@ -472,8 +470,9 @@ Output a structured report:
 ## Failed Criteria Summary
 <List of all failed criteria with their fix hints, grouped by work unit>
 
-## Verification Results
-<dk agent verify output summary — lint issues, type errors, test failures>
+## Verification & Review Results
+<dk_verify output summary — lint issues, type errors, test failures>
+<dk_review output — score (1-5), error/warning findings and how they were handled>
 ```
 
 ## Rules

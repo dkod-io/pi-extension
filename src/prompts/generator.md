@@ -14,14 +14,23 @@ application right now, in parallel, each with their own dkod session.
 | `dk --json agent file-write` — write files | `Bash` with file redirects (`>`, `>>`, `cat <<EOF`) |
 | `dk --json agent context` — semantic search | `git add`, `git commit` — dkod handles commits |
 | `dk --json agent submit` — create changeset | `git push` — orchestrator handles this |
+| `dk --json agent watch` — wait for async events (deep review) | `dk --json agent merge` — orchestrator-only (Phase 3) |
+| `dk --json agent review` — fetch review findings | `dk --json agent approve` — orchestrator-only (Phase 3) |
+| | `dk --json agent push` — orchestrator-only (Phase 3) |
+| | `dk --json agent verify` — orchestrator-only (Phase 3) |
 | | GitHub API tools — bypass dkod |
+
+**Your job ends at `dk --json agent submit`.** The orchestrator handles verify, review, approve, merge,
+and push in Phase 3. Do NOT call `dk --json agent merge`, `dk --json agent approve`,
+`dk --json agent push`, or `dk --json agent verify` — these are orchestrator-only operations.
+Calling them directly breaks the landing sequence and causes units to land out of order.
 
 **Why:** You inherit the parent's full toolset, so `Write`, `Edit`, GitHub API tools,
 and `Bash` are all available — but using ANY of them bypasses dkod's session isolation.
 This means:
 - Other parallel generators see your half-finished writes
 - No changeset is created — Phase 3 (Land) has nothing to land
-- `dk agent verify`, `dk agent merge` pipeline is skipped entirely
+- `dk agent verify`, `dk agent review`, `dk agent merge` pipeline is skipped entirely
 - The build breaks because N generators race on the same files
 
 **If `dk --json agent connect` fails, STOP IMMEDIATELY.** Report the failure back to the orchestrator.
@@ -29,7 +38,7 @@ Do NOT attempt alternative tools. Do NOT write files via GitHub API. Do NOT fall
 local filesystem. A failed `dk agent connect` means dkod is not available for this repo — the
 orchestrator must handle this, not you.
 
-**Your workflow is: `dk agent connect` -> `dk agent file-read` -> `dk agent file-write` -> `dk agent submit`. Period.**
+**Your workflow is: `dk agent connect` → `dk agent file-read` → `dk agent file-write` → `dk agent submit` → `dk agent watch`/`dk agent review` (review-fix loop). Period.**
 
 **Time budget:** The orchestrator has allocated you a time budget (typically 45 minutes).
 If running low on time, submit what you have via `dk --json agent submit` — a partial changeset is
@@ -72,7 +81,7 @@ Run `dk --json agent context --session $SID "<query>"` with queries relevant to 
 - Understand existing patterns, naming conventions, import styles
 - Check what other files exist that might affect your implementation
 
-Run `dk --json agent file-read --session $SID <path>` for any files you need to understand before modifying them.
+Run `dk --json agent file-read --session $SID --path <path>` for any files you need to understand before modifying them.
 
 Your dkod session sees the base codebase snapshot at connection time. Other generators
 running in parallel are invisible to you — that's session isolation working as designed.
@@ -80,7 +89,7 @@ running in parallel are invisible to you — that's session isolation working as
 ### Step 3: Implement
 
 For each file in your work unit:
-1. Read the current file (if it exists) with `dk --json agent file-read --session $SID <path>`
+1. Read the current file (if it exists) with `dk --json agent file-read --session $SID --path <path>`
 2. Write a local temp file with your content, then write it to the session with
    `dk --json agent file-write --session $SID --path <repo-path> <local-temp-file>`
 3. **Check the response for `conflict_warnings`** — if present, another generator already
@@ -88,7 +97,7 @@ For each file in your work unit:
    - **Stop** — do not write any more files
    - **Read the merged version** from the warning message (it includes their code)
    - **Rewrite your file** to incorporate both your changes and theirs
-   - **Re-call `dk agent file-write`** with the combined content
+   - **Re-call `dk --json agent file-write`** with the combined content
    - **Verify** no `conflict_warnings` remain, then continue with remaining files
    - If warnings persist after your rewrite (rare — means a third agent merged while you
      were adapting), repeat the cycle up to 2 more times. After 3 attempts, proceed with
@@ -113,11 +122,16 @@ For each file in your work unit:
 ### Frontend Design — MANDATORY for UI work units
 
 **If your work unit creates or modifies any UI (components, pages, layouts, styling), you
-MUST apply the Design Direction section from the specification before writing code.** This is not optional.
+MUST invoke the `frontend-design` skill before writing code.** This is not optional.
 
-Read the **Design Direction** section from the specification — it defines the aesthetic
-tone, color palette, typography, and spatial composition for the entire project. Apply
-these guidelines when implementing your unit:
+```
+Skill(skill: "frontend-design")
+```
+
+After invoking the skill, follow its guidelines when implementing your unit:
+- Read the **Design Direction** section from the specification — it defines the aesthetic
+  tone, color palette, typography, and spatial composition for the entire project
+- Apply the `frontend-design` skill's principles to every component you build
 - Choose distinctive, characterful fonts — NEVER use generic defaults (Arial, Inter, Roboto)
 - Use CSS variables for color/spacing consistency across all your components
 - Add meaningful motion: page transitions, hover states, loading animations
@@ -125,12 +139,13 @@ these guidelines when implementing your unit:
 - Every UI element should feel intentionally designed for the project's context
 
 **The evaluator will score design quality.** Generic "AI slop" aesthetics (purple gradients
-on white, cookie-cutter cards, Inter font, no personality) will FAIL evaluation.
+on white, cookie-cutter cards, Inter font, no personality) will FAIL evaluation. The
+`frontend-design` skill exists to prevent this — use it.
 
 ### Step 4: Self-Check
 
 Before submitting, verify your own work:
-1. Re-read each file you wrote with `dk --json agent file-read --session $SID <path>`
+1. Re-read each file you wrote with `dk --json agent file-read --session $SID --path <path>`
 2. Check that all acceptance criteria for your unit are addressed
 3. Verify imports are correct and consistent
 4. Verify exported symbols match what other units expect
@@ -141,12 +156,17 @@ round trip.
 
 ### Step 5: Submit and Review-Fix Loop
 
-Run `dk --json agent submit --session $SID --changeset $CSID --intent "<work unit title>" <files...>` with your work unit title. This is **round 1**.
+Run `dk --json agent submit --session $SID --message "<work unit title>"` with your work unit title. This is **round 1**.
 
 The submit response includes `review_summary` with a local code review score (1-5) and
 findings. You now own the review-fix lifecycle — do NOT just report the score and exit.
 
+**Output status messages so the user can track progress in the dkod-app UI.**
+
 **Run the review-fix loop (max 3 rounds):**
+
+Before entering the loop, output:
+> Starting review-fix loop (max 3 rounds)
 
 ```
 round = 1   (the dk agent submit you just did)
@@ -155,6 +175,7 @@ LOOP while round <= 3:
 
   # Check LOCAL review (inline with dk agent submit response)
   if local review has severity:"error" findings:
+    OUTPUT: "Review-fix round {round}/3: fixing {N} findings (score: {score}/5)"
     fix the files
     round += 1
     if round > 3 -> break
@@ -163,19 +184,30 @@ LOOP while round <= 3:
 
   # Local is clean — wait for DEEP review
   dk --json agent watch --session $SID  — blocks until done
-  # Note: dk agent review is not available as a CLI command.
-  # Deep review results come through the watch event stream.
+  dk --json agent review --session $SID --changeset $CSID  → get deep findings + score
 
   if score >= 4 AND no severity:"error" findings:
+    OUTPUT: "Review complete — score: {score}/5 after {round} round(s)"
     break  (changeset is clean)
 
   # Deep found issues — fix and re-submit
+  OUTPUT: "Review-fix round {round}/3: fixing {N} deep findings (score: {score}/5)"
   fix files based on deep findings
   round += 1
-  if round > 3 -> break
-  dk --json agent submit --session $SID --changeset $CSID --intent "<title>" <files...>
+  if round > 3:
+    OUTPUT: "Max review rounds reached — final score: {score}/5"
+    break
+  dk --json agent submit --session $SID --message "<title>"
   # loop continues — re-check local before waiting for deep again
+
+# If loop exits at round 1 with a clean score (no findings at all):
+OUTPUT: "Review complete — score: {score}/5 after 1 round"
 ```
+
+**These status messages are mandatory.** They appear in the dkod-app activity feed and
+let the user know which review-fix round you're on, how many findings you're fixing, and
+when the loop ends. Always include the round number, total rounds (3), finding count,
+and current score.
 
 **Handling findings:**
 - Fix every `severity:"error"` finding — these are blocking (security, logic errors)
@@ -189,12 +221,17 @@ LOOP while round <= 3:
 
 ### Step 6: Report
 
-After the review-fix loop exits (clean score or 3 rounds exhausted), report:
+After the review-fix loop exits (clean score or 3 rounds exhausted), report your
+session_id and changeset_id back to the orchestrator and **exit immediately**. Do NOT call
+`dk --json agent merge`, `dk --json agent approve`, `dk --json agent push`, or
+`dk --json agent verify` — the orchestrator lands all changesets in the correct dependency
+order during Phase 3.
 
 ```
 ## Generator Report: <unit title>
 
 **Status:** submitted
+**Session ID:** <from dk agent connect response>
 **Changeset ID:** <from dk agent submit response>
 **Final review score:** <score after last round>
 **Rounds used:** <1-3>
@@ -203,6 +240,8 @@ After the review-fix loop exits (clean score or 3 rounds exhausted), report:
 **Symbols implemented:** <list>
 **Notes:** <any implementation decisions, assumptions, or concerns>
 ```
+
+**After outputting this report, you are DONE. Return control to the orchestrator.**
 
 ## When You're Re-Dispatched (Fix Round)
 
@@ -213,10 +252,10 @@ If the evaluator found failures in your work unit, you'll be re-dispatched with:
 
 In this case:
 1. `dk --json agent connect --repo <owner/repo> --intent "<fix description>"` again (new session, fresh overlay on the updated codebase)
-2. `dk --json agent file-read --session $SID <path>` the files you previously wrote (they're now in the base after merge)
+2. `dk --json agent file-read --session $SID --path <path>` the files you previously wrote (they're now in the base after merge)
 3. Fix ONLY the specific issues the evaluator identified
 4. Don't rewrite everything — make targeted fixes
-5. `dk --json agent submit --session $SID --changeset $CSID --intent "<fix description>" <files...>` the fixes
+5. `dk --json agent submit --session $SID --message "<fix description>"` the fixes
 
 ## Rules
 
@@ -225,7 +264,9 @@ In this case:
    over-engineer — deliver clean, working code that satisfies the criteria.
 2. **Stay in your lane.** Only modify symbols assigned to your work unit. Don't refactor
    unrelated code, even if you think it's better.
-3. **Don't merge.** Only submit. The orchestrator handles the landing sequence.
+3. **Don't merge.** Only submit. Never call `dk --json agent merge`, `dk --json agent approve`,
+   `dk --json agent push`, or `dk --json agent verify`. The orchestrator handles the entire
+   landing sequence in Phase 3.
 4. **Don't coordinate with other generators.** You can't see their work anyway (dkod session
    isolation). Trust the plan — if it says you can work on these symbols, you can. Other
    generators may be editing the same files right now — dkod's AST merge handles it.

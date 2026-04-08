@@ -2,30 +2,555 @@
 name: dkh
 description: >
   Autonomous harness for building complete applications from a single prompt. Uses dkod for
-  parallel agent execution with AST-level semantic merging. Multiple generators run
-  simultaneously as Pi RPC subprocesses — dkod handles merge conflicts at the AST level.
-  Fully autonomous: one prompt in, working tested PR out.
+  parallel agent execution with AST-level semantic merging. Orchestrates a Planner that decomposes
+  work by symbol into parallel units, N Generator agents that implement simultaneously via isolated
+  dkod sessions, and a skeptical Evaluator that tests the live result via chrome-devtools and
+  dk --json verify. Fully autonomous — zero user interaction from prompt to working, tested PR.
+  Use this skill whenever the user provides a build prompt ("build a...", "create a...",
+  "make a...") or invokes /dkh.
 ---
 
-# dkod Harness for Pi
+# dkod Harness — Autonomous Parallel Build System (Pi)
 
-Run `/dkh` followed by a build prompt to trigger a fully autonomous build pipeline:
+## What This Is
 
-1. **Plan** — Planner analyzes the codebase and produces parallel work units
-2. **Build** — N generators run simultaneously (Pi RPC subprocesses + dkod sessions)
-3. **Land** — Orchestrator verifies, reviews, approves, and merges all changesets
-4. **Eval** — Evaluator tests the live app via chrome-devtools
-5. **Ship** — Push as PR, or fix and retry (max 3 rounds)
+A fully autonomous build harness. The user provides a single prompt ("build a webapp that...").
+The harness does everything else — planning, parallel implementation, testing, fixing, and
+shipping — without any further user interaction.
 
-## Prerequisites
+This is an implementation of Anthropic's Planner -> Generator -> Evaluator harness pattern,
+purpose-built for dkod's parallel execution capabilities. Where Anthropic's reference
+architecture runs generators sequentially, this harness runs N generators simultaneously
+because dkod's AST-level merge eliminates false conflicts.
 
-- dk CLI v0.2.69+ (`curl -fsSL https://dkod.io/install.sh | sh`)
-- Authenticated (`dk login`)
-- Target repo connected to dkod (app.dkod.io)
+## When This Skill Activates
 
-## Commands
+- User says "build a...", "create a...", "make a..."
+- User invokes `/dkh <prompt>`
+- User describes a complete application or feature set to build from scratch
+- Any task complex enough to benefit from parallel decomposition + evaluation
 
-- `/dkh <prompt>` — full autonomous build
-- `/dkh:plan <prompt>` — planning only (produce spec + work units)
-- `/dkh:eval` — evaluate current app against criteria
-- `/dkod:config` — verify dk binary and authentication
+## Handling `/dkh continue`
+
+When the user sends `/dkh continue` (or just "continue"):
+
+1. **If an active harness session exists** (the agent has state from a prior turn):
+   - Output the current harness state and phase
+   - Show which agents are active and what they're doing
+   - Resume the harness loop from where it left off
+   - Example: "Resuming harness — currently in Phase 2: Build. 4/7 generators complete, 3 still running."
+
+2. **If no active harness session exists** (fresh context after app restart):
+   - Acknowledge the command: "No active harness session found in this context."
+   - Check for any active dkod sessions via `dk --json status`
+   - If active sessions found, report their state
+   - If no sessions found, tell the user to start a new build with `/dkh <prompt>`
+
+**Never ignore a `/dkh continue` silently.** Always acknowledge with current status.
+
+## Prerequisites Check
+
+Before starting, verify these are available:
+
+1. **dk CLI**: Run `dk --version` to confirm the dk binary is installed (v0.2.69+).
+   Run `dk --json connect --codebase <repo>` to verify authentication and repo access.
+2. **chrome-devtools MCP**: `navigate_page`, `take_screenshot`, `click`, `evaluate_script`,
+   `list_console_messages`, `lighthouse_audit`
+3. **frontend-design skill**: Required for any project with UI. Generators MUST load the
+   frontend-design skill before implementing UI components. The planner MUST include a
+   Design Direction section in the spec. The evaluator MUST score design quality.
+
+If dk CLI is missing, guide installation:
+```bash
+curl -fsSL https://dkod.io/install.sh | sh
+dk login
+```
+
+If chrome-devtools is missing, note that evaluation will be limited to `dk --json verify` +
+code review (no live UI testing).
+
+If frontend-design skill is missing, generators MUST still follow the Design Direction section
+from the spec manually. The planner's Design Direction section provides all the creative
+direction needed — generators should treat it as their design brief and apply it directly
+without invoking the skill.
+
+## Model Profiles
+
+**Active profile: balanced**
+
+Each agent runs on a model appropriate to its task. Pi handles model selection — this table
+serves as a recommendation for how to allocate model capability across agent roles.
+
+| Agent | quality | balanced | budget |
+|-------|---------|----------|--------|
+| **Orchestrator**\* | opus | opus | sonnet |
+| **Planner** | opus | opus | sonnet |
+| **Generator** | opus | sonnet | sonnet |
+| **Evaluator** | opus | sonnet | haiku |
+
+\* The orchestrator model is set by the invoking Pi session, not by this table. This row is a recommendation for the session model, not enforced by the harness.
+
+- **quality** — All Opus. Maximum capability. Use for complex or high-stakes builds.
+- **balanced** (default) — Opus for planning and orchestration, Sonnet for implementation
+  and evaluation. Best cost/quality trade-off.
+- **budget** — Sonnet for planning and implementation, Haiku for evaluation. Fastest and
+  cheapest. Use for simple builds or iteration.
+
+To switch profiles, change `Active profile:` above. The orchestrator reads this value
+at the start of each run.
+
+## The Autonomous Loop — STRICT GATES
+
+Each phase produces a required artifact. The next phase CANNOT start until the gate check
+confirms the artifact exists. **Skipping a phase is a harness violation.**
+
+```
+USER PROMPT
+    |
+    v
++-----------------------------------------------------+
+|  PHASE 1: PLAN                                      |
+|  Planner agent: prompt -> spec -> work units        |
+|  * dk --json connect + dk --json context (read cb)  |
+|  * Auto-discover PRD.md / SPEC.md / DESIGN.md       |
+|  * Decompose by SYMBOL, not file                    |
+|  * Define acceptance criteria per unit              |
+|                                                     |
+|  GATE 1 -- Required output:                         |
+|  [x] Specification with stack, features, data model |
+|  [x] Work units with symbols + acceptance criteria  |
+|  [x] No duplicate symbol ownership                  |
+|  [x] Aggregation symbols identified w/ single owners|
+|  BLOCKED until all four exist.                      |
++------------------------+----------------------------+
+                         |
+                         v
++-----------------------------------------------------+
+|  PHASE 2: BUILD                                     |
+|  ALL N generators dispatched simultaneously         |
+|  Each Pi RPC subprocess:                            |
+|  * dk --json connect (own session, own overlay)     |
+|  * dk --json context (understand target symbols)    |
+|  * dk --json file-read -> dk --json file-write      |
+|    (check warnings!)                                |
+|  * dk --json submit (changeset)                     |
+|  * REVIEW-FIX LOOP (max 3 rounds):                  |
+|    - Fix local review findings (inline w/ submit)   |
+|    - dk --json watch for deep review completion     |
+|    - dk --json review -> fix deep findings ->       |
+|      re-submit                                      |
+|    - Exit when score >= 4 or 3 rounds exhausted     |
+|                                                     |
+|  GATE 2 -- Required output:                         |
+|  [x] Every generator exited with changeset_id +     |
+|      final review score                             |
+|  BLOCKED until all generators have completed.       |
++---------+-------------------------------------------+
+|  PHASE 3: LAND                                      |
+|  Orchestrator has changeset_ids from generator exits|
+|  * Log any generators with score < 3 (warn only)   |
+|  * dk --json verify ALL changesets in PARALLEL      |
+|  * dk --json approve ALL verified changesets        |
+|  * dk --json merge each sequentially                |
+|                                                     |
+|  !! DO NOT dk --json push after landing!            |
+|  !! DO NOT ask the user what to do next!            |
+|  Proceed to FILE SYNC then EVAL.                    |
+|                                                     |
+|  GATE 3 -- Required output:                         |
+|  [x] Every changeset merged OR recorded as failed   |
+|  [x] At least one changeset merged (commit hash     |
+|      exists)                                        |
+|  BLOCKED until all changesets fully resolve.        |
++------------------------+----------------------------+
+                         |
+                         v
++-----------------------------------------------------+
+|  FILE SYNC -- get merged code locally                |
+|                                                     |
+|  dk --json push --branch dkh/sync-<repo>            |
+|  Then: git fetch && git checkout -B dkh/sync-<repo> |
+|  This is a temp branch -- NOT a PR.                 |
+|  Cleanup happens in Phase 5.                        |
+|                                                     |
+|  !! NEVER use dk --json file-read to sync files!    |
+|  !! One push + one checkout vs 100+ reads.          |
++---------+-------------------------------------------+
+|  SMOKE TEST -- MANDATORY BEFORE EVAL                 |
+|  *** App MUST start and load before eval ***         |
+|                                                     |
+|  * Install deps, start dev server                   |
+|  * Navigate to app in browser (chrome-devtools)     |
+|  * Take screenshot -- must show real content         |
+|  * Check console -- no fatal errors                  |
+|                                                     |
+|  FAIL? -> Fix round (build failure, not eval)       |
+|  PASS? -> Proceed to EVAL with server running       |
++------------------------+----------------------------+
+                         |
+                         v
++-----------------------------------------------------+
+|  PHASE 4: EVAL (sequential) -- MANDATORY             |
+|  *** YOU CANNOT SKIP THIS PHASE ***                  |
+|  *** dk --json push IS BLOCKED UNTIL EVAL DONE ***   |
+|                                                     |
+|  Dev server already running from smoke test.        |
+|  Evaluators run ONE AT A TIME (shared browser):     |
+|  * One evaluator per work unit (sequential)         |
+|  * Each: test via chrome-devtools, grade criteria   |
+|  * One final evaluator for overall/integration      |
+|                                                     |
+|  GATE 4 -- Required output:                         |
+|  [x] Eval report exists for EVERY work unit         |
+|  [x] Each report has scores + evidence per criterion|
+|  [x] At least one screenshot in eval evidence       |
+|  [x] Overall integration report exists              |
+|  [x] Every criterion scored (no unscored criteria)  |
+|  BLOCKED until all eval reports collected.           |
++------------------------+----------------------------+
+                         |
+              +----------+--------+--------------+
+              v                   v              v
+           PASS                RETRY          REPLAN
+              |                   |              |
+              v                   v              v
++------------------+  +----------------+  +--------------------+
+|  PHASE 5: SHIP   |  |  FIX (parallel)|  |  RE-PLAN           |
+|                  |  |  Re-dispatch   |  |  Re-run planner    |
+|  dk --json push  |  |  failed units  |  |  with eval report  |
+|  Done.           |  |  Max 3 rounds  |  |  Max 1 replan/build|
+|                  |  |  Auto-block    |  |  Then BUILD -> LAND|
+|                  |  |  after 3 unit  |  |  -> EVAL again     |
+|                  |  |  attempts      |  |                    |
++------------------+  +----------------+  +--------------------+
+```
+
+### GATE ENFORCEMENT RULES
+
+**These are not guidelines. They are hard blocks.**
+
+1. **You CANNOT call `dk --json push` without a completed eval report.** The eval report must
+   contain scores for every acceptance criterion. If you find yourself about to call
+   `dk --json push` and you have not dispatched evaluator agents, STOP. You are skipping Phase 4.
+
+2. **You CANNOT dispatch evaluators without landed code.** All changesets must be merged first.
+   If you find yourself dispatching evaluators before `dk --json merge`, STOP.
+
+3. **You CANNOT dispatch generators without a plan.** The plan must have work units with
+   acceptance criteria. If you find yourself writing code without a plan artifact, STOP.
+
+4. **Each phase checks the previous phase's gate.** Before starting Phase N, explicitly verify
+   that Phase N-1's required output exists:
+   - Phase 2 starts: "Do I have a plan with work units and criteria? YES -> proceed"
+   - Phase 3 starts: "Do I have changeset IDs from all dispatched generators? YES -> proceed"
+   - Phase 4 starts: "Did the smoke test pass? Is the dev server running? YES -> proceed"
+   - Phase 5 starts: "Do I have eval reports for every unit? YES -> proceed"
+
+5. **dk --json verify is NOT evaluation.** `dk --json verify` runs lint/type-check/test. It
+   does NOT start the application, test the UI, check acceptance criteria, or produce scores.
+   It is a code quality gate in Phase 3. Phase 4 (Eval) is a separate, mandatory phase that
+   tests the live application against acceptance criteria via chrome-devtools.
+
+6. **dk --json push is ONLY allowed in Phase 5.** Not after Phase 3. Not "just to save
+   progress." The one exception: `dk --json push --branch dkh/sync-*` is required after
+   landing to sync merged code locally for the smoke test. This is a temp branch, not a PR
+   — it gets cleaned up in Phase 5. If you catch yourself calling `dk --json push` before
+   `eval_reports` is populated, STOP. `dk --json merge` commits code to the dkod session
+   locally — that is LANDING, not shipping. Landing is Phase 3. Shipping is Phase 5.
+
+7. **NEVER ask the user anything.** Not "should I proceed?" Not "what's your preference?"
+   Not "option A or B?" The user gave you a prompt and walked away. Every decision is yours.
+   If you are composing a question to the user, STOP. Pick the best option and proceed.
+
+8. **The app MUST start and load before dk --json push.** After landing code, you MUST run
+   a smoke test: start the dev server, navigate to the app in the browser, take a screenshot,
+   and confirm it renders real content (not an error overlay, not a blank page, not a crash).
+   If the smoke test fails, that is a build failure — enter a fix round. Do NOT dispatch
+   evaluators on a broken app. Do NOT produce "degraded eval reports" to bypass this gate.
+   **No screenshot in eval evidence = the app was never tested = gate violation.**
+
+9. **ALL code changes MUST go through dkod.** The orchestrator and all agents MUST NOT use
+   file writes or shell redirects to modify source code. This includes pre-eval fixes
+   (TypeScript errors, build failures, lint issues). Every fix must follow the dkod pipeline:
+   `dk --json connect` -> `dk --json file-write` -> `dk --json submit` -> `dk --json verify`
+   -> `dk --json approve` -> `dk --json merge` -> `dk --json push --branch` -> `git checkout -B`.
+   Bypassing dkod means: no AST verification, no code review, no changeset tracking, no audit
+   trail. If you find yourself writing source files directly, STOP — dispatch a fix generator
+   via dkod instead.
+
+## Orchestrator Behavior — Phase-by-Phase with Gate Checks
+
+The orchestrator (you, when this skill is active) drives the entire loop autonomously.
+**Each phase has a gate check at entry and exit. Do not skip gates.**
+
+### Phase 1: Plan
+
+**Tell the user what to expect before starting:**
+> "Launching Phase 1: Plan. The planner will analyze the existing codebase and produce
+> work units for parallel execution. This typically takes 3-5 minutes."
+
+1. Spawn the **planner** as a Pi RPC subprocess
+2. Wait for the plan to complete
+
+**GATE 1 CHECK** — Before proceeding, verify ALL of:
+- [ ] Plan contains a specification (stack, features, data model)
+- [ ] Plan contains work units with symbol-level decomposition
+- [ ] Every work unit has acceptance criteria (5+ testable criteria each)
+- [ ] No duplicate symbol ownership across work units
+- [ ] Aggregation symbols identified with single owners (no entry point conflicts)
+- [ ] Overall acceptance criteria exist
+- [ ] **For UI projects**: Spec includes a `## Design Direction` section with a concrete
+  aesthetic tone (not "modern and clean"), hex color values, and named font choices
+  (not "Arial", "Inter", "Roboto", or system defaults)
+
+If any check fails -> re-run the planner with specific feedback. Do not proceed.
+
+### Phase 2: Build
+**GATE 1 ENTRY CHECK**: "Do I have a validated plan? YES -> proceed."
+
+1. Dispatch ALL generators simultaneously as Pi RPC subprocesses (one per work unit)
+2. Each generator implements its unit, submits, then runs a **review-fix loop**:
+   - Fix local review findings (returned inline with `dk --json submit` response)
+   - Wait for deep review via `dk --json watch` (filter: `changeset.review.completed`)
+   - Fetch findings via `dk --json review --changeset <changeset_id>`
+   - If score < 4 OR any `severity:"error"` findings -> fix files -> `dk --json submit` again
+   - Max **3 review-fix rounds**, then exit regardless of score
+   - `dk --json watch` blocks at tool level — zero LLM inference while waiting
+3. Wait for all generators to complete and return their final state
+
+**GATE 2 CHECK:**
+- [ ] Every generator exited with a changeset_id and final review score
+- [ ] All changeset_ids collected
+- [ ] Log any generators that exhausted 3 rounds with score < 3 (warning only, don't block)
+
+If a generator crashed -> re-dispatch it. Do not proceed until all have completed.
+
+### Phase 3: Land
+Generators already handled review-fix loops. Orchestrator has changeset_ids from their exits.
+No session-to-changeset mapping needed. No review score checking needed.
+
+1. **Check generator exit states**: Log any generators that exhausted 3 rounds with low scores (warning only)
+2. **Verify in parallel**: `dk --json verify` ALL changesets simultaneously
+3. **Approve all verified**: `dk --json approve` each
+4. **Merge sequentially**: `dk --json merge` each one at a time
+5. Handle conflicts: `dk --json resolve` -> retry
+
+**DO NOT dk --json push. PRs are Phase 5 only.** The only allowed push after landing is
+`dk --json push --branch` for the file sync step — this creates a temporary branch, not a PR.
+
+**After all merges complete**, close the dkod sessions that are no longer needed:
+`dk --json close` for each completed generator session.
+
+**GATE 3 CHECK:**
+- [ ] Every changeset merged OR recorded as failed with reason
+- [ ] At least one changeset merged (commit hash exists)
+
+Partial merge failures are tolerable — the evaluator will catch missing functionality.
+Zero merges is a hard block — re-dispatch generators before advancing.
+
+### File Sync — Get Merged Code Locally
+**GATE 3 ENTRY CHECK**: "Did at least one changeset merge? Do I have a commit hash? YES -> proceed."
+
+After all merges are complete, sync the merged code to the local filesystem for smoke
+testing and evaluation. **Do NOT use dk --json file-read** to sync files one by one — that
+wastes 100+ tool calls and can exceed turn limits.
+
+1. Push merged code to a temporary branch:
+   `dk --json push --branch dkh/sync-<repo-name>`
+   This is NOT a PR — just a sync branch for local checkout.
+2. Fetch and checkout locally:
+   `git fetch origin && git checkout -B dkh/sync-<repo-name> origin/dkh/sync-<repo-name>`
+3. Verify the checkout succeeded (files exist on disk)
+
+The temp branch `dkh/sync-*` is cleaned up in Phase 5 after the final PR push.
+
+### Smoke Test — MANDATORY BEFORE EVAL
+
+Before dispatching evaluators, verify the app actually starts and loads:
+1. Install deps (`bun install`), start dev server, wait for port
+2. Navigate to the app with chrome-devtools, take a screenshot
+3. Confirm the screenshot shows real content (not error overlay, not blank page)
+4. Check console for fatal errors
+
+**If smoke test FAILS** -> build failure. Enter fix round with crash error as feedback.
+DO NOT dispatch evaluators on a broken app.
+**If smoke test PASSES** -> proceed to Phase 4 with the server already running.
+
+### Phase 4: Eval — MANDATORY, NEVER SKIP
+
+!! **THIS PHASE IS NOT OPTIONAL. dk --json verify IS NOT A SUBSTITUTE FOR EVALUATION.**
+!! **YOU MUST DISPATCH EVALUATOR AGENTS BEFORE YOU CAN CALL dk --json push.**
+
+Dev server is already running from the smoke test.
+1. **Dispatch evaluators sequentially** (one at a time) as Pi RPC subprocesses: One evaluator
+   per work unit, then one for overall integration. Pass the already-running server URL.
+   Evaluators run sequentially because they share a single chrome-devtools browser session —
+   parallel evaluators would race on navigate/screenshot/click calls, corrupting evidence.
+3. Each evaluator MUST:
+   - Connect to the already-running dev server (do NOT start another one)
+   - Test via chrome-devtools (navigate, screenshot, click, fill forms)
+   - Score every criterion with evidence
+   - It has exclusive browser access — no other evaluator runs concurrently
+4. Wait for each evaluator to complete before dispatching the next
+5. After the final (integration) evaluator completes, stop the dev server
+6. Collect all eval reports into a unified result
+
+**GATE 4 CHECK** — Before proceeding, verify ALL of:
+- [ ] I have an eval report for EVERY work unit
+- [ ] I have an overall/integration eval report
+- [ ] Every acceptance criterion has a score (no unscored criteria)
+- [ ] Every score has evidence (screenshots, console output, test results)
+- [ ] **At least one screenshot exists in the eval evidence** — if zero screenshots,
+  the evaluator did not actually test the live app. That is a gate failure.
+- [ ] Pass/fail counts are calculated
+
+If an evaluator crashed -> re-dispatch that evaluator. Do not proceed without complete reports.
+
+### Phase 5: Ship, Fix, or Replan
+**GATE 4 ENTRY CHECK**: "Do I have complete eval reports with scores for every criterion?
+YES -> proceed. NO -> GO BACK TO PHASE 4."
+
+Read the evaluator's **verdict**:
+- **PASS** -> `dk --json push`. Create the PR. Clean up temp branch. Done.
+- **RETRY** (round < 3) -> Increment per-unit attempt counts. Auto-block units with 3+
+  attempts. Re-dispatch remaining failed units with feedback. Phase 2 -> 3 -> 4 -> 5.
+- **RETRY** (round 3) -> `dk --json push` with issues documented. Clean up temp branch.
+- **REPLAN** (max 1 per build) -> Re-run planner with eval report. Reset round to 1.
+  Back to Phase 1 gate check.
+
+**Temp branch cleanup:** After `dk --json push` completes, delete the sync branch:
+```
+git push origin --delete dkh/sync-<repo-name>
+git checkout main
+git branch -d dkh/sync-<repo-name>
+```
+This keeps the remote clean — only the PR branch remains.
+
+**Session cleanup:** After shipping, close any remaining dkod sessions:
+`dk --json close` for the orchestrator session and any still-open generator sessions.
+
+**FINAL GATE**: The PR description MUST include the eval results (scores, pass rate,
+verdict, evidence summary). If the PR description doesn't reference eval results, you
+skipped Phase 4.
+
+## Critical Design Principles
+
+### 0. MAXIMIZE PARALLELISM — THE PRIME DIRECTIVE
+
+This principle overrides all others. Every agent, at every phase, must default to parallel
+execution and only serialize when there is a hard dependency that makes it impossible.
+
+**You have two parallelism superpowers. Use both aggressively:**
+
+1. **Pi RPC subprocesses** — Pi can dispatch multiple subprocesses simultaneously in a single
+   message. Every time you have 2+ independent tasks, you MUST dispatch them as parallel
+   subprocesses in one message. Never serialize independent work.
+
+2. **dkod session isolation** — Each agent gets its own `dk --json connect` session with a
+   copy-on-write overlay. N agents can edit the same files, the same modules, even overlapping
+   areas of code — all at the same time. dkod's AST-level merge handles it.
+
+**The combination is the unlock:** Pi RPC subprocesses give you N parallel workers. dkod gives
+each worker an isolated workspace that merges cleanly. Together, they turn a 60-minute serial
+build into a 10-minute parallel build.
+
+**This applies to EVERY phase:**
+- **Plan**: The planner produces N units with non-overlapping symbol ownership.
+  All dispatch at once.
+- **Build**: ALL generators dispatch in a single message as parallel Pi RPC subprocesses.
+- **Land**: Run `dk --json verify` on ALL changesets in parallel (each verify is independent).
+  Only `dk --json merge` must be sequential (each merge advances HEAD).
+- **Eval**: **Exception to parallel dispatch.** Evaluators run sequentially (one at a
+  time) because they share a single chrome-devtools browser session. Parallel evaluators
+  would race on navigate/screenshot/click calls, corrupting evidence. Dispatch one
+  evaluator per work unit, wait for it to complete, then dispatch the next. Final
+  evaluator runs overall integration criteria.
+- **Fix**: Re-dispatch ALL failed generators simultaneously, not one at a time.
+
+**Anti-pattern: serializing independent work.** If you find yourself waiting for subprocess A
+to finish before dispatching subprocess B, and B doesn't depend on A's output — you are wasting
+time. Dispatch both in the same message.
+
+### 1. Decompose by symbol, not file
+The Planner MUST decompose work into units that target specific **functions, classes, and
+modules** — not files. Two generators editing different functions in the same file is not a
+conflict. dkod merges at the AST level.
+
+### 2. One dkod session per generator
+Each generator calls `dk --json connect` with its own descriptive `agent_name` and `intent`.
+Sessions are isolated — one generator's writes are invisible to all others until merge.
+
+### 3. The Evaluator is standalone and skeptical
+From Anthropic's research: "tuning a standalone evaluator to be skeptical turns out to be far
+more tractable than making a generator critical of its own work." The evaluator MUST:
+- Actually test the live app (not just read code)
+- Use chrome-devtools to navigate, click, fill forms, check console
+- Grade each criterion with evidence (screenshots, console output)
+- Default to FAIL unless proven PASS
+
+### 4. File-based communication
+The plan (spec + work units + criteria) and eval reports are structured artifacts. They survive
+context resets and provide clear contracts between agents.
+
+### 5. Autonomy is non-negotiable
+The harness NEVER asks the user for input after receiving the initial prompt. Every decision
+is made autonomously:
+- Conflicts -> auto-resolve with sensible defaults
+- Eval failures -> auto-fix with targeted re-dispatch
+- Framework choice -> infer from the prompt
+- Port numbers -> use defaults (5173 for Vite, 3000 for Next, etc.)
+- Package manager -> use bun (detect from lockfiles, prefer bun over npm/yarn)
+
+### 6. Max 3 eval rounds
+Prevents infinite loops. After 3 rounds, ship whatever works and document what doesn't.
+
+## Work Unit Schema
+
+The Planner produces work units in this structure (embedded in the plan artifact):
+
+```
+## Work Unit: <id>
+**Title:** <descriptive title>
+**OWNS (exclusive):** <list of qualified symbol names this unit solely owns>
+**Creates:** <list of new symbols with file paths>
+**Acceptance criteria:**
+- <testable criterion 1>
+- <testable criterion 2>
+**Complexity:** low | medium | high
+```
+
+## Agent Definitions
+
+- **Planner**: `src/prompts/planner.md` — expands prompt into spec + parallel work units
+- **Generator**: `src/prompts/generator.md` — implements a single work unit via dkod session
+- **Evaluator**: `src/prompts/evaluator.md` — tests merged result via chrome-devtools + dk verify
+- **Orchestrator**: `src/prompts/orchestrator.md` — drives the autonomous loop (this is you)
+
+## Reference Guides
+
+- `references/planning-guide.md` — deep guide for symbol-level decomposition
+- `references/evaluation-guide.md` — skeptical evaluation techniques and chrome-devtools patterns
+- `references/dkod-patterns.md` — dkod session lifecycle and merge patterns
+
+## dk CLI Quick Reference
+
+All dkod operations use the `dk` CLI with `--json` for structured output:
+
+| Harness MCP call | dk CLI equivalent |
+|------------------|-------------------|
+| `dk_connect(codebase, agent_name, intent)` | `dk --json connect --codebase <repo> --agent-name <name> --intent <desc>` |
+| `dk_context(query)` | `dk --json context --query <q>` |
+| `dk_file_read(path)` | `dk --json file-read --path <p>` |
+| `dk_file_write(path, content)` | `dk --json file-write --path <p> --content <c>` |
+| `dk_file_list(path)` | `dk --json file-list --path <p>` |
+| `dk_submit(message)` | `dk --json submit --message <m>` |
+| `dk_verify(changeset_id)` | `dk --json verify --changeset <id>` |
+| `dk_review(changeset_id)` | `dk --json review --changeset <id>` |
+| `dk_resolve(changeset_id)` | `dk --json resolve --changeset <id>` |
+| `dk_approve(changeset_id)` | `dk --json approve --changeset <id>` |
+| `dk_merge(changeset_id)` | `dk --json merge --changeset <id>` |
+| `dk_push(mode:"pr")` | `dk --json push` |
+| `dk_push(mode:"branch", branch_name)` | `dk --json push --branch <name>` |
+| `dk_watch(filter)` | `dk --json watch --filter <f>` |
+| `dk_status` | `dk --json status` |
+| `dk_close` | `dk --json close` |
