@@ -57,24 +57,49 @@ You will NOT call dk_connect again.**
 
 ### Step 2: Understand Context
 
-Call `dk_context` with queries relevant to your work unit:
-- Look up the symbols you need to modify or that your new code will interact with
-- Understand existing patterns, naming conventions, import styles
-- Check what other files exist that might affect your implementation
+**Greenfield (empty repo)?** Skip `dk_context` and `dk_file_read` entirely — there's
+nothing to read. Go straight to Step 3 and write your files based on the plan spec.
+Do NOT call `dk_file_read` on files that don't exist yet (e.g., `src/App.tsx` before
+the scaffolding unit creates it). If `dk_file_read` returns "file not found", move on
+immediately — never retry a missing file.
 
-Call `dk_file_read` for any files you need to understand before modifying them.
+**Existing codebase?** Read efficiently:
+- `dk_context` — look up symbols you need to modify or interact with
+- `dk_file_read` — only for files that ALREADY EXIST and you need to understand
+- If `dk_file_read` returns an error, the file doesn't exist — skip it, don't retry
 
-### Step 3: Implement — CONFLICT_WARNINGS ARE HARD GATES
+### Step 3: Implement — MAXIMUM CONCURRENCY + REAL-TIME COORDINATION
 
-**CRITICAL: Every `dk_file_write` response MUST be checked for `conflict_warnings`.
-If conflict_warnings are present, you MUST resolve them BEFORE writing any more files
-and BEFORE calling dk_submit. Submitting with unresolved conflict_warnings is a
-HARNESS VIOLATION — your changeset WILL be rejected at merge and the entire build fails.**
+**dkod uses AST-level merging, not line diffing.** This means:
+- **Multiple generators CAN write to the same file** — dkod merges different symbols
+  in the same file automatically. This is a SOFT CONFLICT and resolves on its own.
+- **Multiple generators MUST NOT write to the same symbol** — this is a TRUE CONFLICT
+  that requires manual resolution.
 
-This is the core coordination mechanism of dkod. Multiple generators write to the same
-codebase simultaneously. `dk_file_write` tells you IN REAL TIME if another generator is
-modifying the same symbols. You MUST respond to these warnings — they are not informational,
-they are hard gates.
+**You are encouraged to write to any file your implementation needs.** Don't avoid a file
+because another generator might also write to it — that's exactly what dkod handles.
+What matters is SYMBOLS, not files.
+
+**HOWEVER: you MUST only create/modify symbols listed in your work unit's `OWNS` and
+`Creates` fields.** If another generator owns a symbol, do NOT overwrite it. Instead:
+- Import from their path (use `dk_watch` to see what they actually created)
+- Define a local type/interface if you just need the shape
+- Add NEW symbols to a shared file — that's fine, dkod merges them
+
+**conflict_warnings are your real-time coordination mechanism.** Every `dk_file_write`
+response MUST be checked. If conflict_warnings are present, another generator is modifying
+the SAME SYMBOL (true conflict). You MUST resolve this BEFORE writing more files and
+BEFORE calling dk_submit.
+
+**How conflict resolution works:**
+- **Soft conflict** (different symbols in same file): dkod auto-merges. No warning.
+  No action needed. This is the normal, expected case for parallel generators.
+- **True conflict** (same symbol): `dk_file_write` returns a `CONFLICT WARNING`.
+  You MUST stop, call `dk_watch()`, call `dk_file_read` to see their version, adapt
+  your code to complement theirs, and re-write. Do NOT overwrite their work.
+
+Submitting with unresolved conflict_warnings is a HARNESS VIOLATION — your changeset
+WILL be rejected at merge.
 
 **The implementation loop:**
 

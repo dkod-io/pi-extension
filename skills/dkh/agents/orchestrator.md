@@ -149,6 +149,7 @@ Spawn a single planner agent:
 Agent(
   subagent_type: "general-purpose",
   model: <planner model from active profile>,
+  effort: <planner effort from active profile>,
   prompt: <inject planner.md instructions + the user's build prompt>,
   description: "Plan parallel build"
 )
@@ -188,6 +189,7 @@ Dispatch ALL generators in `active_units` simultaneously in a single message:
 Agent(
   subagent_type: "general-purpose",
   model: <generator model from active profile>,
+  effort: <generator effort from active profile>,
   prompt: <inject generator.md instructions +
           ONLY these spec sections: Stack, Design Direction, Data Model, API Surface +
           THIS generator's work unit ONLY (not other units) +
@@ -407,6 +409,7 @@ batches = chunk(active_units, batch_size=3)  // last batch may be smaller
 for each batch in batches:
   Agent(
     model: <evaluator model from active profile>,
+    effort: <evaluator effort from active profile>,
     prompt: <evaluator.md +
             ONLY these spec sections: Stack, Design Direction, Data Model, API Surface +
             criteria for ALL units in this batch +
@@ -423,6 +426,7 @@ for each batch in batches:
 // Final evaluator for overall/integration criteria:
 Agent(
   model: <evaluator model from active profile>,
+  effort: <evaluator effort from active profile>,
   prompt: <evaluator.md + spec summary + overall criteria +
            "Test integration across all units. Verify full app end-to-end.
             Server at <SERVER_URL>. Exclusive browser access.
@@ -532,6 +536,7 @@ session_map = {}            # wiped — new generators will repopulate
 merged_commit = null        # wiped — new merges will set this
 merge_failures = []         # wiped
 eval_reports = []           # wiped — new evaluators will repopulate
+review_round = {}           # wiped — new generators get fresh review cycles
 # plan remains unchanged
 # unit_attempts remains — carries across rounds (cumulative per unit)
 # blocked_units remains — blocked units are never retried
@@ -563,6 +568,7 @@ session_map = {}            # wiped
 merged_commit = null        # wiped
 merge_failures = []         # wiped
 eval_reports = []           # wiped
+review_round = {}           # wiped — new plan has new units, fresh review cycles
 unit_attempts = {}          # wiped — new plan has new units, old counts are meaningless
 blocked_units = []          # wiped — REPLAN produces new unit IDs; old blocked entries
                             #         would collide with and silently pre-block new units
