@@ -69,17 +69,22 @@ Call `dk_connect` first — all subsequent dkod tools require an active session:
 **Save the `session_id` returned by dk_connect — you will pass it to every subsequent
 dk_* call, including dk_close at the end.**
 
-### Step 1: Discover Existing Specs
+### Step 1: Discover Existing Specs and Design System
 
 Search for existing documentation in the codebase. Check these paths (first match wins):
 
 ```
 PRD.md, prd.md, SPEC.md, spec.md, REQUIREMENTS.md, requirements.md,
-DESIGN.md, design.md, docs/PRD.md, docs/prd.md, docs/SPEC.md, docs/spec.md,
-docs/DESIGN.md, docs/design.md, docs/REQUIREMENTS.md, docs/requirements.md
+docs/PRD.md, docs/prd.md, docs/SPEC.md, docs/spec.md,
+docs/REQUIREMENTS.md, docs/requirements.md
 ```
 
-Use `dk_file_list` to check which files exist, then `dk_file_read` to read the first match.
+**Also check for DESIGN.md** (design system from awesome-design-md):
+```
+DESIGN.md, design.md, docs/DESIGN.md, docs/design.md
+```
+
+Use `dk_file_list` to check which files exist, then `dk_file_read` to read matches.
 
 **If a spec file is found:**
 - Read it (cap at 100KB — if larger, read the first 100KB and note the truncation)
@@ -90,6 +95,22 @@ Use `dk_file_list` to check which files exist, then `dk_file_read` to read the f
 **If no spec file is found:**
 - Generate the full specification from scratch (current behavior)
 - This is the common case for greenfield projects
+
+**If a DESIGN.md file is found (or `HAS_DESIGN_MD = true` from orchestrator):**
+- Try these paths in order: `DESIGN.md`, `design.md`, `docs/DESIGN.md`, `docs/design.md`
+- Read the first match — this is an awesome-design-md design system document
+- It becomes the **authoritative design reference** for the project
+- Use it to populate the Design Direction section (see Step 3) instead of inventing one
+- Extract: color palette, typography, spacing, component styles, tone/aesthetic
+- **CRITICAL: Note the ACTUAL resolved path in the spec** — e.g., if found at `docs/DESIGN.md`,
+  write: `"Design system sourced from docs/DESIGN.md (awesome-design-md)"`. Generators and
+  evaluators will use this exact path to read the file. Do NOT hardcode `DESIGN.md`.
+- Generators will follow the design system directly — no frontend-design skill needed
+
+**If no DESIGN.md exists:**
+- Generate the Design Direction section from scratch (current behavior)
+- Add this note to the plan output:
+  `💡 dkod recommends using a DESIGN.md file for higher-quality frontend design. Browse options at https://github.com/VoltAgent/awesome-design-md`
 
 ### Step 2: Understand the Codebase
 
@@ -153,6 +174,19 @@ Produce a specification that covers:
 - **Build**: <bundler, package manager>
 
 ## Design Direction — MANDATORY for any project with UI
+
+**If DESIGN.md exists** (from awesome-design-md):
+<Summarize the key design tokens — colors, typography, spacing, component patterns, tone.
+Reference the actual file path as the authority. Generators will read it directly and do
+NOT need the frontend-design skill.>
+
+- **Source**: <actual resolved path> (awesome-design-md)   ← e.g., `docs/DESIGN.md`
+- **Color palette**: <extracted with hex values>
+- **Typography**: <extracted — font families and weights>
+- **Component patterns**: <key patterns — buttons, cards, forms, etc.>
+- **Tone/aesthetic**: <derived from the design system's overall direction>
+
+**If no DESIGN.md exists** (generate from scratch):
 <This section is required. The frontend-design skill will be invoked by every
 generator that builds UI components. You must define the creative direction here
 so all generators produce a cohesive visual result.>
@@ -317,6 +351,46 @@ in separate files owned by their respective units.
 Other units MUST NOT write to files containing aggregation symbols. They write their
 implementations in separate files that the aggregation symbol imports.
 
+### Step 5c: Build the File Manifest
+
+The file manifest is a **complete, structured table** mapping every symbol to its exact
+file path across ALL units. This manifest is sent to EVERY generator so they know exactly
+where to import from — no guessing.
+
+**Why this exists:** Without a shared file manifest, parallel generators must guess import
+paths for symbols owned by other units. Different generators guess differently → broken
+imports across 15+ files → expensive post-merge integration fix. The manifest eliminates
+this class of errors entirely.
+
+**Rules:**
+1. **Every symbol in every unit's OWNS and Creates lists MUST appear in the manifest.**
+2. **File paths are EXACT** — `src/stores/useTaskStore.ts`, not `src/stores/taskStore`.
+3. **Export names are EXACT** — `useTaskStore`, not `taskStore` or `useTaskStoreHook`.
+4. **Follow the stack's conventions** for file paths. If the spec says Zustand, stores go
+   in `src/stores/<storeName>.ts` with `use<Name>Store` as the default export.
+5. **The manifest is the contract.** If a generator needs to import a symbol from another
+   unit, it uses the path and name from the manifest. No alternatives.
+
+**Add this section to your plan output (after Aggregation Symbols):**
+
+```
+## File Manifest
+
+| Symbol | File | Export Name | Owner |
+|--------|------|-------------|-------|
+| App | src/App.tsx | App (default) | WU-01 |
+| router | src/router.tsx | router | WU-01 |
+| useTaskStore | src/stores/useTaskStore.ts | useTaskStore | WU-02 |
+| Task (type) | src/stores/useTaskStore.ts | Task | WU-02 |
+| useProjectStore | src/stores/useProjectStore.ts | useProjectStore | WU-03 |
+| TaskCard | src/components/TaskCard.tsx | TaskCard | WU-04 |
+| BoardPage | src/pages/BoardPage.tsx | BoardPage (default) | WU-05 |
+| ... | ... | ... | ... |
+```
+
+**Every generator receives this table.** When Unit 4 needs to import `useTaskStore`, it
+imports from `src/stores/useTaskStore.ts` — exactly as specified, no guessing.
+
 ### Step 6: Define Acceptance Criteria
 
 For each work unit, define testable criteria the evaluator will check:
@@ -373,6 +447,12 @@ Your output is a single structured artifact:
 |--------|------|-------|---------------|
 | <symbol> | <file> | <owner unit> | <what it imports/registers> |
 
+## File Manifest
+
+| Symbol | File | Export Name | Owner |
+|--------|------|-------------|-------|
+| <symbol> | <exact file path> | <exact export name> | <owner unit> |
+
 ## Dispatch
 All units dispatch simultaneously: [Unit 1, Unit 2, Unit 3, Unit 4, Unit 5, Unit 6]
 
@@ -394,10 +474,13 @@ if any check fails — save a round trip by catching it yourself:
   have exactly one owner
 - [ ] Every work unit has 5+ testable acceptance criteria
 - [ ] Overall acceptance criteria exist (app starts, no console errors, responsive, etc.)
-- [ ] **For UI projects**: Design Direction section exists with specific tone (not "modern
+- [ ] **For UI projects**: Design Direction section exists — either sourced from DESIGN.md
+  (with extracted tokens) or generated from scratch with specific tone (not "modern
   and clean"), hex color values, and named font choices (not Arial/Inter/Roboto)
 - [ ] **No two units own the same SYMBOL** (same file is fine — dkod AST-merges different
   symbols in the same file automatically). Check OWNS lists for duplicate symbol names.
+- [ ] **File Manifest exists** with every symbol from every unit's OWNS/Creates lists.
+  Every entry has an exact file path and exact export name. No duplicates across units.
 
 If any check fails, fix the plan before outputting it.
 
