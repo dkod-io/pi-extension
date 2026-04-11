@@ -1,6 +1,6 @@
 {
   "name": "@dkod/pi",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "dkod extension for Pi — parallel agent execution with AST-level semantic merging",
   "keywords": [
     "pi-package",
