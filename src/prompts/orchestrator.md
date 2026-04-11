@@ -67,65 +67,13 @@ with stale claims.
 round: 1                    # Current round (1, 2, or 3)
 plan: null                  # Set after Phase 1
 active_units: []            # All units in round 1; only failed units in rounds 2+
-changeset_ids: []           # Set after Phase 2 — one per unit in active_units
-merged_commit: null         # Set after Phase 3 — latest commit hash
-merge_failures: []          # Changesets that failed to merge
-eval_reports: []            # Set after Phase 4 — MUST EXIST before dk_push
+merged_units: []            # Units that successfully merged (from generator reports)
+merge_failures: []          # Units that failed to merge/review
+eval_reports: []            # Set after Phase 3 — MUST EXIST before dk_push
 unit_attempts: {}           # { "unit-id": attempt_count } — incremented each re-dispatch
 blocked_units: []           # Units that exceeded MAX_UNIT_ATTEMPTS (3) — not retried
 replan_count: 0             # Number of REPLANs executed this build (max 1)
-review_round: {}            # { "unit_id": round_count } — per-unit review-fix counter, keyed by unit NOT changeset (max 10)
-session_map: {}             # { changeset_id: session_id } — populated from each generator's dk_connect response, needed for dk_close
 ```
-
----
-
-### PRE-FLIGHT — DETERMINE REPO AND VERIFY DKOD CONNECTION
-
-**Before ANYTHING else**, determine the target repository:
-
-1. **Check if the prompt contains `[dkod repo: <owner/repo>]`** — if present, use that
-   exact value as the repo name. This is the authoritative source — it comes from the
-   dkod workspace configuration and is always correct.
-2. **If no tag**, fall back to `git remote get-url origin` in the cwd and extract `owner/repo`.
-3. **NEVER guess the owner from the GitHub username or directory name.**
-   The repo might be under an org (`dkod-io/`) not the user's personal account (`haim-ari/`).
-   Always use the `[dkod repo:]` tag or the git remote — never invent an owner.
-
-Then verify dkod is connected:
-
-```
-dk_connect(
-  codebase: "<owner/repo from step above>",
-  agent_name: "preflight",
-  intent: "Verify dkod connection before starting harness"
-)
-```
-
-**If dk_connect FAILS** → STOP IMMEDIATELY. Do NOT proceed to planning or building.
-Tell the user:
-```
-"dkod is not connected to <owner/repo>. Connect it at https://app.dkod.io
-before running /dkh. The harness requires dkod for session isolation —
-it cannot operate without it."
-```
-This is the ONE exception to "never ask the user anything" — a missing dkod connection
-is a hard prerequisite, not a decision the harness can make autonomously.
-
-**If dk_connect SUCCEEDS** → close the preflight session (it was just a check).
-
-```
-# Clean slate — close all non-terminal changesets from previous runs.
-# This prevents stale sessions, orphaned claims, and false conflict_warnings.
-Bash: curl -sf -X POST "https://api.dkod.io/api/repos/<owner>/<repo>/changesets/bulk-close" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DKOD_API_KEY" \
-  -d '{"states": ["draft", "submitted", "approved", "rejected"], "created_before": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}'
-```
-
-Proceed to Phase 1.
-
----
 
 ### PHASE 1 — PLAN
 
@@ -141,7 +89,8 @@ Agent(
   subagent_type: "general-purpose",
   model: <planner model from active profile>,
   effort: <planner effort from active profile>,
-  prompt: <inject planner.md instructions + the user's build prompt>,
+  prompt: <inject planner.md instructions + the user's build prompt +
+          "HAS_DESIGN_MD = <true|false>.">,
   description: "Plan parallel build"
 )
 ```
@@ -160,6 +109,9 @@ Before proceeding, verify:
   together (e.g., `run()`, `App.tsx`, `mod.rs`, `index.ts`, `router.ts`) must be listed in
   the plan's Aggregation Symbols table with exactly one owner each. If missing, REJECT.
 - [ ] Design direction established for any UI work
+- [ ] **File Manifest exists.** Every symbol from every unit's OWNS/Creates lists must
+  appear in the File Manifest table with an exact file path and export name. If missing,
+  REJECT — tell the planner to add a File Manifest section.
 
 **If gate fails** → re-run planner with specific feedback, up to **3 attempts**. If Gate 1
 fails 3 times, halt with an error report explaining which checks failed and why the prompt
@@ -167,172 +119,9 @@ may require manual decomposition. Do NOT proceed.
 **If gate passes** → set `plan = <the plan>`, set `active_units = plan.work_units`.
   Proceed to Phase 2.
 
----
-
-### PHASE 2 — BUILD
-
-**Entry check**: `plan` must be set. If null → STOP, go back to Phase 1.
-
-Dispatch ALL generators in `active_units` simultaneously in a single message:
-
-```
-// Single message with multiple Agent tool calls:
-Agent(
-  subagent_type: "general-purpose",
-  model: <generator model from active profile>,
-  effort: <generator effort from active profile>,
-  prompt: <inject generator.md instructions +
-          ONLY these spec sections: Stack, Design Direction, Data Model, API Surface +
-          THIS generator's work unit ONLY (not other units) +
-          Aggregation Symbols table (so generators know what NOT to touch) +
-          "CRITICAL: Use dk_connect → dk_file_write → dk_submit ONLY.
-           NEVER use Write, Edit, or Bash to create/modify source files.
-           Report BOTH session_id AND changeset_id when done.">,
-  description: "Build: <unit title>",
-  name: "generator-<unit-id>"
-)
-// ... one per unit in active_units
-```
-
-**Do NOT send every unit's details to every generator.** Each generator only needs:
-the tech stack, design direction, data model, its own unit, and the aggregation table.
-Other units' acceptance criteria are noise that wastes context tokens.
-
-Wait for all generators to complete.
-
-**As each generator completes**, check its report status:
-
-- **Status: submitted** → record session_id and changeset_id in `session_map`.
-  Output: `Generator **[unit-name]** complete — session [sid], changeset [id], score [X/5]. Progress: N/M done.`
-
-- **Status: conflict_blocked** → the generator could NOT submit due to unresolved
-  conflict_warnings BEFORE its first dk_submit. No changeset_id exists.
-  Record its session_id. **Immediately call `dk_close(session_id)`** to release claims.
-  Output: `Generator **[unit-name]** CONFLICT_BLOCKED — closing session [sid], will re-dispatch. Progress: N/M done.`
-
-- **Status: conflict_blocked_after_submit** → the generator submitted successfully but
-  hit an unresolvable conflict during the review-fix loop. It HAS a valid changeset_id
-  from the earlier submit. Record the changeset_id in `changeset_ids`.
-  **Call `dk_close(session_id)`** to release symbol claims from the abandoned review-fix
-  writes — without this, fix-round generators will hit spurious conflicts.
-  **Treat this as a successful submit for Phase 3** — the earlier changeset is valid
-  and may merge cleanly (the conflict was on the review-fix rewrite, not the original).
-  Output: `Generator **[unit-name]** conflict during review-fix — closing session [sid], using earlier changeset [id], score [X/5]. Progress: N/M done.`
-
-- **No report / crashed** → record whatever session_id is available from the dispatch.
-
-**═══ GATE 2 CHECK ═══**
-Before proceeding, verify:
-- [ ] Every generator has reported back
-- [ ] Count generators with `status: submitted` or `status: conflict_blocked_after_submit` (have changeset_id)
-- [ ] Count generators with `status: conflict_blocked` (no changeset_id)
-
-**If any generators are conflict_blocked:**
-1. Call `dk_close(session_id)` for each conflict_blocked generator (if not already closed above)
-2. For each conflict_blocked generator:
-   - Increment `unit_attempts[unit_id]`
-   - If `unit_attempts[unit_id] >= 3` → move to `blocked_units`, **remove from `active_units`**, skip re-dispatch
-   - Otherwise → re-dispatch with feedback:
-     "Your previous attempt was blocked by a conflict on <file> with <agent>.
-     That agent's changeset is now submitted. Call dk_watch() first, adapt to their
-     changes, then implement your unit."
-3. If all conflict_blocked generators are now in `blocked_units` → fall through to
-   gate pass with whatever submitted changesets exist (forced-ship with documented gaps)
-4. Otherwise → wait for re-dispatched generators to complete, re-check Gate 2
-
-**If any generators crashed** (no report at all):
-- If they have a recorded session_id → call `dk_close(session_id)` to release claims
-- Re-dispatch. Do NOT proceed until all have submitted.
-
-**If gate passes** (all generators have status: submitted or conflict_blocked_after_submit, all have changeset_ids):
-→ set `changeset_ids = [...]` and verify `session_map` has an entry for each changeset_id
-  **whose generator reported `submitted`** (conflict_blocked_after_submit sessions are
-  already closed and do not need a session_map entry).
-> **Gate 2 PASSED** — `changeset_ids: [id1, id2, ...]`, `active_units: [N units]`. Proceeding to Phase 3 (Land).
-
----
-
-### PHASE 3 — LAND
-
-**Entry check**: `changeset_ids` must be non-empty.
-
-1. **Verify in PARALLEL** — `dk_verify` ALL changesets simultaneously
-2. **Review Gate** (CRITICAL, max 10 rounds) — see below
-3. **Approve** — `dk_approve` each verified changeset
-4. **Merge sequentially** — `dk_merge` each changeset one at a time. Merge order does not
-   matter — all units are independent.
-   **After each merge**, output a progress line:
-   > Merged changeset `[id]` for unit **[name]**. Progress: **N/M merged.**
-
-#### Review Gate — CRITICAL (max 10 rounds)
-
-**═══ MERGE QUALITY GATES — NO EXCEPTIONS ═══**
-- **Local review: must be ≥ 4/5** with no severity:"error" findings
-- **Deep review: must be 5/5** with no severity:"error" findings
-- Changesets that don't meet BOTH thresholds MUST NOT be approved or merged.
-
-After dk_verify for each changeset:
-
-1. Call `dk_review(changeset_id)` to get code review results (local + deep)
-2. **Check LOCAL review first:**
-   - **Local score < 4 OR has "error" findings** → re-dispatch generator to fix
-   - **Local score ≥ 4 AND no "error" findings** → proceed to check deep review
-3. **Check DEEP review:**
-   - **Deep score == 5 AND no "error" findings** → proceed to approve
-   - **Deep score < 5 OR has "error" findings** → re-dispatch generator to fix
-   - **Deep review not yet complete** → call `dk_watch(filter: "changeset.review.completed")`
-     to wait for it, then `dk_review` again
-4. **`review_round[unit_id]` >= 10** → max rounds reached, hard exit:
-   - If local ≥ 4/5 → proceed to approve with the best available changeset. Log a warning.
-   - If local < 4/5 → skip this unit. Record it in `merge_failures` with reason
-     "review gate exhausted: local score X/5 after 10 rounds". Do NOT approve or merge.
-     The evaluator will catch the missing functionality.
-
-**Re-dispatch flow (when scores don't meet gates):**
-5. **Close the old changeset** before re-dispatch: `dk_close(session_id)`
-6. **Increment `review_round[unit_id]`** by 1, then re-dispatch with payload:
-   - Original work unit spec
-   - Review findings (copy the dk_review output verbatim as context)
-   - "Fix these code review findings. Target: local ≥ 4/5, deep 5/5."
-7. After generator re-submits with a new session_id and changeset_id:
-   a. **Update `session_map`**: record the new IDs (remove old entry)
-   b. **Run `dk_verify`** on the new changeset
-   c. If dk_verify fails → keep the original changeset_id as fallback
-   d. If dk_verify passes → commit the new changeset_id, `dk_review` again, return to step 2
-8. Track `review_round[unit_id]` separately from eval `round` — key by unit_id (stable)
-
-Handle conflicts: `dk_resolve` → retry merge.
-
-⚠️ **DO NOT dk_push after landing. Shipping is Phase 5 only.**
-
-**═══ GATE 3 CHECK ═══**
-Before proceeding, verify:
-- [ ] Every changeset is either merged OR recorded in `merge_failures`
-- [ ] At least one changeset merged successfully (a `merged_commit` hash exists)
-- [ ] Verification/merge failures are recorded for the eval phase
-
-Partial merge failures are tolerable — the evaluator will catch missing functionality.
-But if ZERO changesets merged, that's a hard block.
-
-**If zero merges** → bulk-close all changesets to release claims, then wipe stale state and re-dispatch:
-```
-Bash: curl -sf -X POST "https://api.dkod.io/api/repos/<owner>/<repo>/changesets/bulk-close" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DKOD_API_KEY" \
-  -d '{"states": ["draft", "submitted", "approved", "rejected"], "created_before": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}'
-```
-Then wipe stale state (`changeset_ids = []`, `session_map = {}`, `merged_commit = null`, `merge_failures = []`), then re-dispatch generators with error context.
-**If some merged** → update `merged_commit = <hash>`, record `merge_failures`.
-Output the updated state block:
-> **Gate 3 PASSED** — `merged_commit: [hash]`, `merge_failures: [list or empty]`. Proceeding to Phase 4 (Eval).
-
-Proceed to Phase 4. DO NOT PUSH. DO NOT ASK THE USER.
-
----
-
 ### FILE SYNC — Get Merged Code Locally
 
-**Entry check**: `merged_commit` must be set. If null → STOP, go back to Phase 3.
+**Entry check**: `merged_units` must be non-empty. If empty → STOP, go back to Phase 2.
 
 Sync the merged code to the local filesystem. **Do NOT use `dk_file_read`** to sync
 files one by one — that wastes 100+ tool calls and can exceed turn limits.
@@ -355,9 +144,48 @@ tokens testing a broken app. Fix the build first.
 1. Install dependencies: `bun install`
 2. Start the dev server: `bun run dev`
 3. Wait for the server to be ready (check the port)
-4. **Verify the app loads** — use chrome-devtools `navigate_page` + `take_screenshot` to
-   confirm the app renders something (not a blank page, not an error overlay, not a crash)
-5. **Check the console** — use `list_console_messages` to check for fatal errors
+4. **Verify the app loads** — use the detected browser tool:
+
+   **If `HAS_PLAYWRIGHT = true`:**
+   ```bash
+   timeout 30 node -e "
+     const { chromium } = require('playwright');
+     (async () => {
+       const browser = await chromium.launch();
+       const page = await browser.newPage();
+       await page.goto('<APP_URL>', { waitUntil: 'networkidle' });
+       await page.screenshot({ path: 'smoke-test.png' });
+       await browser.close();
+     })();
+   "
+   ```
+   Then read `smoke-test.png` to confirm it shows real content.
+
+   **If `HAS_PLAYWRIGHT = false`:**
+   Use chrome-devtools `navigate_page` + `take_screenshot` to confirm the app renders
+   something (not a blank page, not an error overlay, not a crash).
+
+5. **Check the console** — check for fatal errors:
+
+   **If `HAS_PLAYWRIGHT = true`:**
+   ```bash
+   timeout 30 node -e "
+     const { chromium } = require('playwright');
+     (async () => {
+       const browser = await chromium.launch();
+       const page = await browser.newPage();
+       const errors = [];
+       page.on('console', msg => { if (msg.type() === 'error') errors.push(msg.text()); });
+       await page.goto('<APP_URL>', { waitUntil: 'networkidle' });
+       await browser.close();
+       if (errors.length) { console.log('ERRORS:', JSON.stringify(errors)); process.exit(1); }
+       console.log('No fatal console errors');
+     })();
+   "
+   ```
+
+   **If `HAS_PLAYWRIGHT = false`:**
+   Use `list_console_messages` to check for fatal errors.
 
 **═══ SMOKE TEST GATE ═══**
 - [ ] Dev server started without crashing
@@ -372,101 +200,19 @@ dk_submit → dk_verify → dk_approve → dk_merge → dk_push branch → git c
 - Kill the dev server
 - Treat ALL units as failed with feedback: "App crashes on startup: <error details>"
 - **Execute Round Transition** (see the "Round Transition" block below): increment `round`,
-  wipe `changeset_ids`, `merged_commit`, `merge_failures`, `eval_reports`
+  wipe `merged_units`, `merge_failures`, `eval_reports`
 - **Check round cap**: if `round >= 3` after incrementing, do NOT re-dispatch.
   Instead, `dk_push` with "app fails to start after 3 rounds" documented. This matches
-  the Phase 5 RETRY round-3 behavior.
+  the Phase 4 RETRY round-3 behavior.
 - Re-dispatch all generators with the crash error as feedback
 - After fix round, re-land, **re-run FILE SYNC** (dk_push branch + git checkout), then re-run smoke test
 
 **If smoke test PASSES** → Record the server URL. Proceed to Phase 4 (Eval).
 
----
-
-### PHASE 4 — EVAL ⚠️ MANDATORY — NEVER SKIP
-
-**Entry check**: Smoke test must have PASSED. Dev server must be running.
-
-**⚠️ STOP AND READ THIS: You are about to evaluate. This is NOT optional.**
-**⚠️ dk_verify (Phase 3) is NOT evaluation. It runs lint/type-check/test.**
-**⚠️ Evaluation means: test with chrome-devtools, score criteria with evidence.**
-**⚠️ You CANNOT call dk_push until eval_reports is populated with REAL evidence.**
-**⚠️ Do NOT fix TypeScript errors, build errors, or lint issues locally with Write/Edit/Bash.**
-**⚠️ If the code has errors, go BACK — dispatch a fix generator through dkod.**
-
-The dev server is already running from the smoke test. Do NOT start another one.
-
-Dispatch evaluators **sequentially** (one at a time) — they share a single chrome-devtools
-browser session. Do NOT instruct evaluators to start their own dev server.
-
-**Batch units to minimize dispatches:** Group 2-3 work units per evaluator when units are
-related or test similar areas. Each evaluator receives the combined criteria for its batch
-and scores all of them. The final evaluator always handles overall/integration criteria.
-
-```
-// Group active_units into batches of 2-3 units each. Never batch_size=1 unless
-// there is only 1 unit. For N=2: one batch of 2. For N=3: one batch of 3.
-// For N=4-6: two batches. For N=7+: three batches. Target: ceil(N/3) batches.
-batches = chunk(active_units, batch_size=3)  // last batch may be smaller
-
-for each batch in batches:
-  Agent(
-    model: <evaluator model from active profile>,
-    effort: <evaluator effort from active profile>,
-    prompt: <evaluator.md +
-            ONLY these spec sections: Stack, Design Direction, Data Model, API Surface +
-            criteria for ALL units in this batch +
-            "The dev server is already running at <SERVER_URL>.
-             Do NOT start another dev server. You have exclusive browser access.
-             Score every criterion for all units in your batch.
-             Time budget: <30 × len(batch)> minutes.">,
-    description: "Eval: <batch unit titles>",
-    name: "evaluator-batch-<N>"
-  )
-  // WAIT for completion before dispatching next batch
-  // > Evaluator batch **[N]** complete — X/Y criteria passed. Progress: **N/M batches done.**
-
-// Final evaluator for overall/integration criteria:
-Agent(
-  model: <evaluator model from active profile>,
-  effort: <evaluator effort from active profile>,
-  prompt: <evaluator.md + spec summary + overall criteria +
-           "Test integration across all units. Verify full app end-to-end.
-            Server at <SERVER_URL>. Exclusive browser access.
-            Time budget: 30 minutes.">,
-  description: "Eval: integration",
-  name: "evaluator-integration"
-)
-```
-
-Wait for the integration evaluator to complete. Then stop the dev server.
-
-**Why batch?** Each evaluator dispatch includes the full evaluator.md instructions (~190 lines).
-Batching 2-3 units per evaluator cuts the number of dispatches (and thus instruction
-repetitions) by 50-66%, saving significant context tokens. The evaluator still tests every
-criterion — it just tests more criteria per session.
-
-**Why sequential?** Evaluators share chrome-devtools. Parallel evaluators would race on
-navigate/screenshot/click, corrupting evidence. This is the ONE phase where serialization
-is mandatory.
-
-**═══ GATE 4 CHECK ═══**
-Before proceeding, verify:
-- [ ] I have eval scores for EVERY work unit's criteria (across all batches)
-- [ ] I have an overall/integration eval report
-- [ ] Every acceptance criterion has a numeric score with evidence
-- [ ] **At least one screenshot exists in the eval evidence**
-- [ ] `eval_reports` is populated
-
-**If gate fails** → re-dispatch missing evaluator batch. Do NOT call dk_push.
-**If gate passes** → set `eval_reports = [...]`. Proceed to Phase 5.
-
----
-
-### PHASE 5 — SHIP or FIX
+### PHASE 4 — SHIP or FIX
 
 **Entry check**: `eval_reports` must be non-empty AND have scores for every criterion.
-If eval_reports is empty → **STOP. YOU SKIPPED PHASE 4. GO BACK.**
+If eval_reports is empty → **STOP. YOU SKIPPED PHASE 3. GO BACK.**
 
 **Verdict aggregation:** Multiple evaluators (per-unit + integration) each emit an
 independent verdict. Aggregate them using the **most severe wins** rule:
@@ -515,163 +261,4 @@ git push origin --delete dkh/sync-<repo-name>
 git checkout main
 git branch -d dkh/sync-<repo-name>
 ```
-
----
-
-### Round Transition (before re-entering Phase 2):
-
-When Phase 5 decides to fix, explicitly reset state before the next round:
-
-```
-# ROUND TRANSITION — execute this before re-entering Phase 2:
-
-# FIRST: bulk-close all non-terminal changesets to release symbol claims.
-# Without this, re-dispatched generators will self-conflict.
-Bash: curl -sf -X POST "https://api.dkod.io/api/repos/<owner>/<repo>/changesets/bulk-close" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DKOD_API_KEY" \
-  -d '{"states": ["draft", "submitted", "approved", "rejected"], "created_before": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}'
-
-round += 1
-active_units = [failed units from eval, EXCLUDING blocked_units]
-changeset_ids = []          # wiped — new generators will repopulate
-session_map = {}            # wiped — new generators will repopulate
-merged_commit = null        # wiped — new merges will set this
-merge_failures = []         # wiped
-eval_reports = []           # wiped — new evaluators will repopulate
-review_round = {}           # wiped — new generators get fresh review cycles
-# plan remains unchanged
-# unit_attempts remains — carries across rounds (cumulative per unit)
-# blocked_units remains — blocked units are never retried
-# replan_count remains unchanged
-```
-
-**Do NOT carry stale state.** If `changeset_ids` from round 1 persists into round 2,
-Gate 2 may incorrectly pass. If `eval_reports` from round 1 persists, Gate 4 may
-incorrectly pass. Wipe them.
-
-### REPLAN Transition (before re-entering Phase 1):
-
-When Phase 5 chooses REPLAN (and `replan_count == 0`), reset state for a full re-plan:
-
-```
-# REPLAN TRANSITION — execute this before re-entering Phase 1:
-
-# FIRST: bulk-close all non-terminal changesets to release symbol claims.
-Bash: curl -sf -X POST "https://api.dkod.io/api/repos/<owner>/<repo>/changesets/bulk-close" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DKOD_API_KEY" \
-  -d '{"states": ["draft", "submitted", "approved", "rejected"], "created_before": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}'
-
-replan_count += 1           # increment FIRST — survives the reset
-round = 1                   # restart from round 1
-active_units = []           # wiped — new plan will repopulate
-changeset_ids = []          # wiped
-session_map = {}            # wiped
-merged_commit = null        # wiped
-merge_failures = []         # wiped
-eval_reports = []           # wiped
-review_round = {}           # wiped — new plan has new units, fresh review cycles
-unit_attempts = {}          # wiped — new plan has new units, old counts are meaningless
-blocked_units = []          # wiped — REPLAN produces new unit IDs; old blocked entries
-                            #         would collide with and silently pre-block new units
-# plan will be replaced by the new plan from the planner
-# replan_count MUST survive — this is the infinite-loop guard
-```
-
-**CRITICAL: `replan_count` must NOT be cleared during a REPLAN reset.** If it is wiped,
-the orchestrator loses memory of prior REPLANs, and the "max 1 REPLAN per build" guard
-can never fire — enabling an infinite REPLAN loop.
-
-**Why clear `blocked_units` and `unit_attempts`?** REPLAN produces a structurally new plan
-with new unit IDs. If old blocked entries survive, their IDs may collide with new units,
-silently pre-blocking brand-new units that have never been tried. Since `replan_count`
-already caps REPLANs at 1, the infinite-loop protection these fields provide is redundant
-across REPLAN boundaries.
-
-### Subsequent Rounds (2 and 3):
-
-After state reset, skip Phase 1 (plan exists). Enter Phase 2 with `active_units`
-(only the failed units). Dispatch ALL failed generators in parallel. Each receives:
-- The original work unit
-- The evaluator's specific failure feedback + evidence
-- Instructions to fix only the failing criteria
-
-Then proceed through Phase 3 (Land) → **FILE SYNC** → Smoke Test → Phase 4 (Eval) → Phase 5 (Ship or Fix).
-**FILE SYNC and Phase 4 are mandatory on EVERY round. Not just round 1.**
-The sync branch (`dkh/sync-<repo>`) is overwritten on each push — no need to delete between rounds.
-
-## Decision-Making Rules
-
-⚠️ **YOU NEVER ASK THE USER ANYTHING. EVER.** Not "should I proceed?" Not "what's your
-preference?" Not "option A or B?" Not "should I eval now or keep building?" The user
-gave you a prompt and walked away. Every decision is yours. If you catch yourself composing
-a question to the user, STOP — pick the best option and proceed autonomously.
-
-You decide:
-
-| Decision | Your Default |
-|----------|-------------|
-| Framework/stack | Infer from prompt. Default: React + Vite + TypeScript for frontend, FastAPI + Python for backend, SQLite for simple DBs |
-| Package manager | Use bun. Detect from lockfiles, prefer bun over npm/yarn |
-| Port numbers | Vite: 5173, Next: 3000, FastAPI: 8000 |
-| Styling | Tailwind CSS unless prompt specifies otherwise |
-| Testing | Vitest for frontend, pytest for backend |
-| Conflict resolution | Auto-resolve non-overlapping. keep_yours for true conflicts. |
-| Eval failures | Re-dispatch generators with feedback. Max 10 review rounds. |
-| Ambiguous requirements | Make a reasonable choice and document it in the spec |
-
-## PR Description Format
-
-When shipping, create a PR with this structure. **The Evaluation Results section is
-mandatory — its absence means you skipped Phase 4.**
-
-```markdown
-## What was built
-<1-3 sentence summary from the spec>
-
-## Architecture
-<Key technical decisions and stack choices>
-
-## Work completed
-<List of work units and their status>
-
-## Evaluation Results
-- **Pass rate:** X/Y criteria (Z%)
-- **Rounds:** {rounds}
-- **Evaluators dispatched:** {count}
-
-### Per-unit scores
-| Unit | Criteria Passed | Score | Key Evidence |
-|------|----------------|-------|-------------|
-| <unit 1> | 5/5 | PASS | <screenshot/test summary> |
-| <unit 2> | 3/5 | FAIL | <specific failures> |
-
-### Remaining issues (if any)
-<List of failed criteria with fix hints from evaluator>
-
-## Built autonomously by dkod-harness
-Planner → {N} parallel generators → {M} sequential evaluators
-Total rounds: {rounds}
-```
-
-## Error Recovery
-
-- **Generator crashes**: Re-dispatch that single generator. Do not restart the entire build.
-- **dk_merge fails repeatedly**: Skip that changeset, note it in the eval.
-- **Dev server won't start (smoke test fails)**: This is a build failure, not an eval
-  issue. DO NOT produce a "degraded eval report" — that is cheating. Instead: treat all
-  units as failed, enter a fix round with the crash error as feedback, re-dispatch
-  generators to fix the build. The app MUST start and load before eval can proceed.
-  If it still won't start after 3 fix rounds, dk_push with "app fails to start" documented.
-- **All generators fail**: Something is fundamentally wrong with the plan. Re-run the planner
-  with "the previous plan produced implementations that all failed to build" and the error logs.
-
-## Self-Check Before dk_push
-
-Run this EVERY time before calling dk_push:
-1. "Did the smoke test PASS? If NO → STOP."
-2. "Is `eval_reports` populated with scores for every criterion? If NO → STOP."
-3. "Do the eval reports contain at least one screenshot? If NO → STOP."
-4. "Am I in Phase 5? If NO → STOP."
 
