@@ -168,11 +168,13 @@ for each file in your work unit:
   # 4. === HARD GATE: CHECK RESPONSE ===
   if response.status == "locked":
     # SYMBOL_LOCKED — another generator holds this symbol.
-    # Wait for their lock to release (they will submit), then retry.
-    # Wait window is short — their submit releases the lock in seconds.
+    # Wait for their lock to release (via merge, close, or session timeout),
+    # then retry. Per the Lock lifecycle above: locks are held through
+    # submit/review/merge and ONLY release on merge success, close, or timeout.
+    # Their submit alone does NOT release the lock.
     dk --json agent watch --session $SID \
       --filter "symbol.lock.released" --wait --timeout-ms 60000
-    dk --json agent file-read --session $SID --path <path>     # read their submitted code
+    dk --json agent file-read --session $SID --path <path>     # read their merged code
     response = dk --json agent file-write --session $SID --path <path> <tmp-adapted>  # write on top of theirs
     # If still locked after 3 retries → report as blocked_timeout
 
