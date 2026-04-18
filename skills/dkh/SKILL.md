@@ -1,23 +1,24 @@
 ---
 name: dkh
-version: 0.1.41
+version: 0.1.50
 description: >
   Autonomous harness for building complete applications from a single prompt. Uses dkod for
   parallel agent execution with AST-level semantic merging. Orchestrates a Planner that decomposes
   work by symbol into parallel units, N Generator agents that implement simultaneously via isolated
   dkod sessions, and a skeptical Evaluator that tests the live result via Playwright CLI (preferred)
-  or chrome-devtools MCP (fallback), plus dk_verify. Fully autonomous — zero user interaction
-  from prompt to working, tested PR.
+  or chrome-devtools MCP (fallback), plus dk --json agent verify. Fully autonomous — zero user
+  interaction from prompt to working, tested PR.
   Use this skill whenever the user provides a build prompt ("build a...", "create a...",
   "make a...") or invokes /dkh.
 compatibility: >
-  Requires dkod MCP server (claude mcp add --transport http dkod https://api.dkod.io/mcp).
+  Requires the dk CLI on the operator's machine (install via `curl -fsSL https://dkod.io/install.sh | sh`
+  and authenticate with `dk login`). All dkod operations run through `dk --json` subcommands.
   Evaluation: Playwright CLI (preferred) or chrome-devtools MCP (fallback).
   Design: DESIGN.md from awesome-design-md (preferred) or frontend-design skill (fallback).
-  Works with Claude Code and Opus 4.6.
+  Works with Pi and Opus 4.6.
 ---
 
-# dkod Harness — Autonomous Parallel Build System
+# dkod Harness — Autonomous Parallel Build System (Pi)
 
 ## What This Is
 
@@ -25,7 +26,7 @@ A fully autonomous build harness. The user provides a single prompt ("build a we
 The harness does everything else — planning, parallel implementation, testing, fixing, and
 shipping — without any further user interaction.
 
-This is an implementation of Anthropic's Planner → Generator → Evaluator harness pattern,
+This is an implementation of Anthropic's Planner -> Generator -> Evaluator harness pattern,
 purpose-built for dkod's parallel execution capabilities. Where Anthropic's reference
 architecture runs generators sequentially, this harness runs N generators simultaneously
 because dkod's AST-level merge eliminates false conflicts.
@@ -41,33 +42,40 @@ because dkod's AST-level merge eliminates false conflicts.
 
 When the user sends `/dkh continue` (or just "continue"):
 
-**═══ MANDATORY: RECOVER STATE AND CLEAN UP BEFORE RESUMING ═══**
+**=== MANDATORY: RECOVER STATE AND CLEAN UP BEFORE RESUMING ===**
 
 **Before re-dispatching ANY generators**, recover the state from the interrupted session
 and clean up only what's incomplete. Do NOT bulk-close everything — submitted changesets
 represent completed work that must be preserved.
 
 **Step 1: Query dkod for existing changesets**
-Call `dk_status` or list changesets via the API to see what the interrupted session left behind.
-Categorize each changeset:
+Call `dk --json status` or list changesets via the API to see what the interrupted session
+left behind. Categorize each changeset:
 
-- **`submitted` state** → KEEP. This generator finished its work. Record its changeset_id.
+- **`submitted` state** -> KEEP. This generator finished its work. Record its changeset_id.
   Do NOT close it. Do NOT re-dispatch this unit.
-- **`approved` state** → KEEP. This changeset passed review and is ready to merge.
-  Record its changeset_id. Proceed to merge in Phase 3.
-- **`draft` state** → INCOMPLETE. This generator was interrupted before dk_submit.
+- **`approved` state** -> KEEP. This changeset passed review and is ready to merge.
+  Record its changeset_id. Proceed to merge in the LAND step.
+- **`draft` state** -> INCOMPLETE. This generator was interrupted before submit.
   Mark this unit for re-dispatch.
-- **`conflicted` state** → STUCK. Mark this unit for re-dispatch.
-- **`rejected` state** → FAILED. Mark this unit for re-dispatch.
+- **`conflicted` state** -> STUCK. Mark this unit for re-dispatch.
+- **`rejected` state** -> FAILED. Mark this unit for re-dispatch.
 
 **Step 2: Close incomplete/failed changesets and release their symbol claims**
-```
-# Close draft/conflicted/rejected — preserve submitted and approved
-Bash: curl -sf -X POST "https://api.dkod.io/api/repos/<owner>/<repo>/changesets/bulk-close" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $DKOD_API_KEY" \
-  -d '{"states": ["draft", "conflicted", "rejected"], "created_before": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}'  \
-  || { echo "Bulk-close failed — aborting resume. Check DKOD_API_KEY and repo path."; exit 1; }
+
+Attempt bulk-close for the incomplete states, but **degrade gracefully** — a failed
+bulk-close should NOT abort the resume. The generator-side `SYMBOL_LOCKED` handling will
+still retry against any stale claims; the bulk-close is a best-effort optimization.
+
+```bash
+# Close draft/conflicted/rejected — preserve submitted and approved.
+# Do NOT abort the resume on failure — warn and continue.
+Bash: if ! curl -sf -X POST "https://api.dkod.io/api/repos/<owner>/<repo>/changesets/bulk-close" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $DKOD_API_KEY" \
+        -d '{"states": ["draft", "conflicted", "rejected"], "created_before": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}'; then
+  echo "WARNING: bulk-close failed — continuing resume anyway. Check DKOD_API_KEY, network, or rate limits. Generators will handle any residual stale claims via SYMBOL_LOCKED retries."
+fi
 ```
 
 **Step 3: Reconstruct harness state**
@@ -90,7 +98,7 @@ Output: "Resuming harness — N/M generators completed before interruption. Re-d
 
 2. **If no active harness session exists** (fresh context after app restart):
    - Acknowledge the command: "No active harness session found in this context."
-   - Check for any active dkod sessions via `dk_status`
+   - Check for any active dkod sessions via `dk --json status`
    - If active sessions found, recover state as described above
    - If no sessions found, tell the user to start a new build with `/dkh <prompt>`
 
@@ -100,21 +108,20 @@ Output: "Resuming harness — N/M generators completed before interruption. Re-d
 
 Before starting, verify these are available:
 
-1. **dkod MCP tools**: `dk_connect`, `dk_context`, `dk_file_write`, `dk_submit`, `dk_verify`,
-   `dk_review`, `dk_approve`, `dk_merge`, `dk_push`, `dk_status`, `dk_watch`
+1. **dk CLI**: Run `dk --version` to confirm the dk binary is installed (v0.2.69+).
+   Run `dk --json agent connect --repo <owner/repo>` to verify authentication and repo access.
 
 2. **Browser testing (pick one — Playwright preferred):**
-   - **Playwright** (preferred): Check with `timeout 10 npx playwright --version`. Uses
-     `@playwright/test` as a library via inline Node.js scripts (`node -e "..."`) for
-     navigation, screenshots, clicks, form fills, console checks, and JS evaluation.
-     Runs headless by default, needs no MCP server, produces deterministic results.
-     CLI subcommands (`npx playwright test`, `npx playwright codegen`) available for
-     structured test runs.
+   - **playwright-cli** (preferred): Check with `playwright-cli --version`. Standalone
+     CLI for skills-less browser automation — screenshots, script execution, PDF generation.
+     No Node.js scripts needed, no MCP server, runs headless by default.
+     See: https://github.com/microsoft/playwright-cli
    - **chrome-devtools MCP** (fallback): `navigate_page`, `take_screenshot`, `click`,
      `evaluate_script`, `list_console_messages`, `lighthouse_audit`. Used only if Playwright
      is not installed.
-   - If NEITHER is available, evaluation falls to `dk_verify` + code review (no live UI testing).
-     Output: `"⚠️ dkod recommends using Playwright for browser testing: npm i -D @playwright/test && npx playwright install chromium"`
+   - If not found, output install instructions and proceed with fallback. Do NOT ask the user or install.
+   - If NEITHER Playwright nor chrome-devtools is available, evaluation falls to
+     `dk --json agent verify` + code review (no live UI testing).
 
 3. **Design system (pick one — DESIGN.md preferred):**
    - **DESIGN.md** (preferred): A design system file in the project root, sourced from
@@ -125,14 +132,14 @@ Before starting, verify these are available:
    - **frontend-design skill** (fallback): If no DESIGN.md exists, generators invoke
      `Skill(skill: "frontend-design")` before implementing UI components. The planner still
      generates a Design Direction section in the spec. The evaluator still scores design quality.
-     Output: `"💡 dkod recommends using a DESIGN.md file for higher-quality frontend design. Browse options at https://github.com/VoltAgent/awesome-design-md"`
+     If not found, output install instructions and proceed with fallback. Do NOT ask the user or install.
    - If NEITHER is available, generators follow the planner's Design Direction section manually.
 
 **Detection flow (run once during PRE-FLIGHT):**
 ```bash
-# 1. Detect Playwright (@playwright/test)
+# 1. Detect playwright-cli (standalone CLI, skills-less operation)
 HAS_PLAYWRIGHT=false
-timeout 10 npx playwright --version 2>/dev/null && HAS_PLAYWRIGHT=true
+playwright-cli --version 2>/dev/null && HAS_PLAYWRIGHT=true
 
 # 2. Detect DESIGN.md (check all paths the planner searches)
 HAS_DESIGN_MD=false
@@ -145,9 +152,10 @@ HAS_DESIGN_MD=false
 # - Smoke test: HAS_PLAYWRIGHT
 ```
 
-If dkod is missing, guide installation:
+If dk CLI is missing, guide installation:
 ```bash
-claude mcp add --transport http dkod https://api.dkod.io/mcp
+curl -fsSL https://dkod.io/install.sh | sh
+dk login
 ```
 
 ## Model Profiles
@@ -155,7 +163,8 @@ claude mcp add --transport http dkod https://api.dkod.io/mcp
 **Active profile: quality**
 
 Each agent runs on a model appropriate to its task. The orchestrator reads the active
-profile and passes `model:` AND `effort:` on every Agent dispatch call.
+profile and specifies the capability tier on every Pi RPC dispatch. Pi resolves the tier
+to a concrete model per the table below.
 
 | Agent | quality | balanced | budget | effort |
 |-------|---------|----------|--------|--------|
@@ -164,11 +173,12 @@ profile and passes `model:` AND `effort:` on every Agent dispatch call.
 | **Generator** | opus | sonnet | sonnet | high |
 | **Evaluator** | opus | sonnet | haiku | max |
 
-\* The orchestrator model is set by the invoking Claude Code session, not by this table. This row is a recommendation for the session model, not enforced by the harness.
+\* The orchestrator model is set by the invoking Pi session, not by this table. This row is a
+recommendation for the session model, not enforced by the harness.
 
 **Effort levels are mandatory.** Planner and Evaluator use `max` (complex reasoning —
 decomposition, scoring). Generator uses `high` (fast execution — file writes, not deep
-analysis). Always pass `effort:` when dispatching agents.
+analysis). Always pass the effort level on every dispatch.
 
 - **quality** — All Opus. Maximum capability. Use for complex or high-stakes builds.
 - **balanced** (default) — Opus for planning and orchestration, Sonnet for implementation
@@ -181,19 +191,20 @@ at the start of each run.
 
 ## The Autonomous Loop
 
-The harness runs a strict phase-gated loop: **PLAN → BUILD → LAND → File Sync → Smoke
-Test → EVAL → SHIP/FIX/REPLAN**. Each phase has entry/exit gates that block progression
-until artifacts exist.
+The harness runs a strict phase-gated loop: **PLAN -> BUILD (generators self-land) ->
+FILE SYNC -> SMOKE TEST -> EVAL -> SHIP/FIX/REPLAN**. Each phase has entry/exit gates
+that block progression until artifacts exist.
 
-**`agents/orchestrator.md` is the single source of truth** for all phase details, gate
-checks, state tracking, dispatch templates, and transition logic. Read it before starting.
+**`src/prompts/orchestrator.md` is the single source of truth** for all phase details,
+gate checks, state tracking, dispatch templates, and transition logic. Read it before
+starting.
 
 **Key constraints:**
-- No `dk_push(mode:"pr")` without completed eval reports (Phase 5 only)
+- No `dk --json push` without completed eval reports (ship phase only)
 - No evaluators without landed + smoke-tested code
 - No generators without a validated plan
-- `dk_verify` is NOT evaluation — Phase 4 tests the live app via chrome-devtools
-- All code changes go through dkod — never use Write/Edit/Bash on source files
+- `dk --json agent verify` is NOT evaluation — the EVAL phase tests the live app via browser tools
+- All code changes go through dkod — never use Write/Edit/Bash file redirects on source files
 - Never ask the user anything — every decision is autonomous
 - Max 3 eval rounds, then ship with documented issues
 
@@ -202,19 +213,19 @@ checks, state tracking, dispatch templates, and transition logic. Read it before
 ### 0. Maximize parallelism — THE PRIME DIRECTIVE
 
 Default to parallel execution; only serialize when there is a hard data dependency.
-Use Claude Code agent teams (multiple Agent calls in one message) + dkod session isolation
+Use Pi RPC subprocesses (multiple dispatches in one message) + dkod session isolation
 (each agent gets its own overlay). Together they turn serial builds into parallel builds.
 
-**Applies to every phase:** generators dispatch simultaneously, dk_verify runs in parallel,
-failed generators re-dispatch in parallel. The ONE exception: evaluators run sequentially
-(shared chrome-devtools browser session).
+**Applies to every phase:** generators dispatch simultaneously, `dk --json agent verify`
+runs in parallel, failed generators re-dispatch in parallel. The ONE exception: evaluators
+run sequentially (shared chrome-devtools browser session).
 
 ### 1. Decompose by symbol, not file
 dkod merges at the AST level. Two generators editing different functions in the same file
 is not a conflict.
 
 ### 2. One dkod session per generator
-Each generator calls `dk_connect` once. Sessions are isolated until merge.
+Each generator calls `dk --json agent connect` once. Sessions are isolated until merge.
 
 ### 3. The Evaluator is standalone and skeptical
 From Anthropic's research: "tuning a standalone evaluator to be skeptical turns out to be far
@@ -225,8 +236,8 @@ proven PASS with evidence.
 The plan and eval reports are structured artifacts that survive context resets.
 
 ### 5. Autonomy is non-negotiable
-The harness NEVER asks the user for input. Conflicts → auto-resolve. Eval failures →
-auto-fix. Framework → infer from prompt. Package manager → bun.
+The harness NEVER asks the user for input. Conflicts -> auto-resolve. Eval failures ->
+auto-fix. Framework -> infer from prompt. Package manager -> bun.
 
 ### 6. Max 3 eval rounds
 Prevents infinite loops. After 3 rounds, ship whatever works and document what doesn't.
@@ -235,7 +246,7 @@ Prevents infinite loops. After 3 rounds, ship whatever works and document what d
 
 The Planner produces work units in this structure (embedded in the plan artifact):
 
-```
+```markdown
 ## Work Unit: <id>
 **Title:** <descriptive title>
 **OWNS (exclusive):** <list of qualified symbol names this unit solely owns>
@@ -249,12 +260,39 @@ The Planner produces work units in this structure (embedded in the plan artifact
 ## Agent Definitions
 
 - **Planner**: `agents/planner.md` — expands prompt into spec + parallel work units
-- **Generator**: `agents/generator.md` — implements a single work unit via dkod session
-- **Evaluator**: `agents/evaluator.md` — tests merged result via chrome-devtools + dk_verify
+- **Generator**: `agents/generator.md` — implements a single work unit via dkod session, owns full pipeline through merge
+- **Evaluator**: `agents/evaluator.md` — tests merged result via browser tool + `dk --json agent verify`
 - **Orchestrator**: `agents/orchestrator.md` — drives the autonomous loop (this is you)
+
+These prompts are mirrored at `src/prompts/` for the Pi TypeScript runtime (loaded by
+`src/commands/*.ts`). Both trees must stay in sync — `skills/dkh/agents/` is the skill-install
+surface; `src/prompts/` is the Pi runtime surface.
 
 ## Reference Guides
 
 - `references/planning-guide.md` — deep guide for symbol-level decomposition
-- `references/evaluation-guide.md` — skeptical evaluation techniques and chrome-devtools patterns
+- `references/evaluation-guide.md` — skeptical evaluation techniques and browser-tool patterns
 - `references/dkod-patterns.md` — dkod session lifecycle and merge patterns
+
+## dk CLI Quick Reference
+
+All dkod operations use the `dk` CLI with `--json` for structured output:
+
+| Harness MCP call | dk CLI equivalent |
+|------------------|-------------------|
+| `dk_connect(codebase, agent_name, intent)` | `dk --json agent connect --repo <repo> --agent-name <name> --intent <desc>` |
+| `dk_context(query)` | `dk --json agent context --session $SID "<q>"` |
+| `dk_file_read(path)` | `dk --json agent file-read --session $SID --path <p>` |
+| `dk_file_write(path, content)` | `dk --json agent file-write --session $SID --path <p> <local-tmp>` |
+| `dk_file_list(path)` | `dk --json agent file-list --session $SID [--path <p>]` |
+| `dk_submit(message)` | `dk --json agent submit --session $SID --message <m>` |
+| `dk_verify(changeset_id)` | `dk --json agent verify --session $SID --changeset <id>` |
+| `dk_review(changeset_id)` | `dk --json agent review --session $SID --changeset <id>` |
+| `dk_resolve(changeset_id)` | `dk --json agent resolve --session $SID --changeset <id>` |
+| `dk_approve(changeset_id)` | `dk --json agent approve --session $SID --changeset <id>` |
+| `dk_merge(changeset_id)` | `dk --json agent merge --session $SID --changeset <id> -m <m>` |
+| `dk_push(mode:"pr")` | `dk --json push` |
+| `dk_push(mode:"branch", branch_name)` | `dk --json push --branch <name>` |
+| `dk_watch(filter)` | `dk --json agent watch --session $SID --filter <f>` |
+| `dk_status` | `dk --json status` |
+| `dk_close` | `dk --json agent close --session $SID` |
