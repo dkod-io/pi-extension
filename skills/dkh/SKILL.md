@@ -259,16 +259,20 @@ The Planner produces work units in this structure (embedded in the plan artifact
 
 ## Agent Definitions
 
-- **Planner**: `src/prompts/planner.md` — expands prompt into spec + parallel work units
-- **Generator**: `src/prompts/generator.md` — implements a single work unit via dkod session, owns full pipeline through merge
-- **Evaluator**: `src/prompts/evaluator.md` — tests merged result via browser tool + `dk --json agent verify`
-- **Orchestrator**: `src/prompts/orchestrator.md` — drives the autonomous loop (this is you)
+- **Planner**: `agents/planner.md` — expands prompt into spec + parallel work units
+- **Generator**: `agents/generator.md` — implements a single work unit via dkod session, owns full pipeline through merge
+- **Evaluator**: `agents/evaluator.md` — tests merged result via browser tool + `dk --json agent verify`
+- **Orchestrator**: `agents/orchestrator.md` — drives the autonomous loop (this is you)
+
+These prompts are mirrored at `src/prompts/` for the Pi TypeScript runtime (loaded by
+`src/commands/*.ts`). Both trees must stay in sync — `skills/dkh/agents/` is the skill-install
+surface; `src/prompts/` is the Pi runtime surface.
 
 ## Reference Guides
 
-- `src/prompts/planning-guide.md` — deep guide for symbol-level decomposition
-- `src/prompts/evaluation-guide.md` — skeptical evaluation techniques and browser-tool patterns
-- `src/prompts/dkod-patterns.md` — dkod session lifecycle and merge patterns
+- `references/planning-guide.md` — deep guide for symbol-level decomposition
+- `references/evaluation-guide.md` — skeptical evaluation techniques and browser-tool patterns
+- `references/dkod-patterns.md` — dkod session lifecycle and merge patterns
 
 ## dk CLI Quick Reference
 
