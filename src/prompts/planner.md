@@ -508,6 +508,11 @@ Your output is a single structured artifact:
 |--------|------|-------------|-------|
 | <symbol> | <exact file path> | <exact export name> | <owner unit> |
 
+## Shared Contracts
+<Mandatory when units share data types, store signatures, or API response shapes —
+see Step 5d for the full format. Include Data Types, Store Functions, and API Response
+Shapes subsections as applicable.>
+
 ## Dispatch
 All units dispatch simultaneously: [Unit 1, Unit 2, Unit 3, Unit 4, Unit 5, Unit 6]
 
@@ -536,6 +541,12 @@ if any check fails — save a round trip by catching it yourself:
   symbols in the same file automatically). Check OWNS lists for duplicate symbol names.
 - [ ] **File Manifest exists** with every symbol from every unit's OWNS/Creates lists.
   Every entry has an exact file path and exact export name. No duplicates across units.
+- [ ] **Shared Contracts exists** whenever units share data types, function signatures,
+  or API response shapes. Every interface entry includes exact field names, exact types
+  (no "identifier" — use `string`, `number`, `Date`, etc.), and owner/consumer units.
+  Every function entry includes exact arg count, arg types, and return type. If the spec
+  has no cross-unit data sharing (rare), state that explicitly in the Shared Contracts
+  section so the orchestrator knows it was considered and not just omitted.
 
 If any check fails, fix the plan before outputting it.
 

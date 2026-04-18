@@ -67,7 +67,7 @@ Attempt bulk-close for the incomplete states, but **degrade gracefully** — a f
 bulk-close should NOT abort the resume. The generator-side `SYMBOL_LOCKED` handling will
 still retry against any stale claims; the bulk-close is a best-effort optimization.
 
-```
+```bash
 # Close draft/conflicted/rejected — preserve submitted and approved.
 # Do NOT abort the resume on failure — warn and continue.
 Bash: if ! curl -sf -X POST "https://api.dkod.io/api/repos/<owner>/<repo>/changesets/bulk-close" \
@@ -246,7 +246,7 @@ Prevents infinite loops. After 3 rounds, ship whatever works and document what d
 
 The Planner produces work units in this structure (embedded in the plan artifact):
 
-```
+```markdown
 ## Work Unit: <id>
 **Title:** <descriptive title>
 **OWNS (exclusive):** <list of qualified symbol names this unit solely owns>

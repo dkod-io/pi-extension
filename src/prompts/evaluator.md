@@ -95,10 +95,24 @@ imports resolve, no dead code/TODOs/placeholders, types consistent across module
 
 ### Step 3: Run Verification and Review
 
-Call `dk --json agent verify --session $SID --changeset $CSID` (lint, type-check, tests,
-semantic analysis). Record failures as evidence. Call
-`dk --json agent review --session $SID --changeset $CSID` — score < 3 or "error" severity
-findings are criterion failures.
+Run verification at the **repo level** (no `--changeset`) because the evaluator tests
+merged code, not an in-flight changeset. Generators already verified their own changesets
+during BUILD — the evaluator confirms the integrated result:
+
+```
+dk --json agent verify --session $SID
+```
+
+Record any lint / type-check / test / semantic failures as evidence.
+
+For review findings, you want the evaluator's judgment on the merged code, not a single
+changeset's review (that was the generator's gate). If your orchestrator dispatch
+prompt includes `changeset_ids` (a list of the merged changesets), sample review findings
+across them by calling `dk --json agent review --session $SID --changeset <id>` for each
+ID of interest. If no changeset list is provided, skip the review call — rely on the
+live-app evidence from Step 5 instead.
+
+Either way, score < 3 or "error" severity findings are criterion failures.
 
 ### Step 4: Start Application (conditional)
 

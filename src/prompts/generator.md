@@ -132,12 +132,18 @@ This is the contract between all generators. Following it guarantees correct imp
 - **Same symbol**: `dk --json agent file-write` returns `SYMBOL_LOCKED`. Your write is
   rejected. Wait for `symbol.lock.released` event, re-read, then write your symbols on top.
 
-**Lock lifecycle:** Locks are acquired on `dk --json agent file-write` and released on the
-next `dk --json agent submit` by the holder — i.e., the hold window is typically seconds,
-not minutes. Locks are also released on `dk --json agent close` and session timeout. Once
-the other generator submits, the lock releases and you can read their code via
-`dk --json agent file-read` — your session will see their submitted-but-not-yet-merged
-overlay on top of the base.
+**Lock lifecycle:** Locks are acquired on `dk --json agent file-write` and **held
+through submit, review, and merge** — they are only released on successful
+`dk --json agent merge`, on `dk --json agent close`, or on session timeout. This matches
+the engine behavior documented in `dkod-patterns.md` (single source of truth for lock
+semantics).
+
+Other agents cannot read your submitted changes until your merge releases the lock.
+When you are blocked on another agent's lock, wait with
+`dk --json agent watch --session $SID --filter "symbol.lock.released" --wait` — the event
+fires on their merge (or close/timeout), at which point
+`dk --json agent file-read --session $SID --path <path>` will see their merged code and
+you can write your symbols on top.
 
 You are effectively **stacking** your changeset on top of theirs. The merge-order
 engine takes care of linearization: parents merge before children.
@@ -464,6 +470,13 @@ After merge (or failure), report back to the orchestrator and **exit immediately
 ```
 
 **After outputting your report, call `dk --json agent close --session $SID` and exit.**
+
+**Exception — `empty_changeset`:** If you reported Status `empty_changeset` in Step 4,
+do NOT call `dk --json agent close` yourself. Session cleanup for empty-changeset cases
+is the orchestrator's responsibility (so it can correlate with its state and avoid
+re-dispatching). Just exit after outputting the report. This is the single authoritative
+rule for empty_changeset — any earlier phrasing in this file that says otherwise is
+overridden here.
 
 ## When You're Re-Dispatched (Fix Round)
 
