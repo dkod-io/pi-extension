@@ -35,7 +35,7 @@ or modify the same function, component, or class.
 
 Split by feature, where each feature spans multiple layers:
 
-```
+```text
 Unit: "User Authentication"
   Symbols: loginHandler(), signupHandler(), AuthMiddleware, LoginPage, SignupForm
   Files: src/api/auth.ts, src/middleware/auth.ts, src/pages/Login.tsx, src/components/SignupForm.tsx
@@ -55,7 +55,7 @@ only their handler implementations in separate files.
 
 Apply the same pattern across many modules:
 
-```
+```text
 Unit: "Add input validation to user endpoints"
   Symbols: createUserHandler(), updateUserHandler()
   Files: src/api/users.ts
@@ -103,19 +103,19 @@ all at once and lets the merge engine handle the rest.
 ## Sizing Work Units
 
 ### Too Small (avoid)
-```
+```text
 Unit: "Add export to User model"
   1 line of code. This doesn't warrant a generator agent.
 ```
 
 ### Too Large (avoid)
-```
+```text
 Unit: "Implement the entire backend"
   This will take 60+ minutes and produces a massive changeset.
 ```
 
 ### Right Size (target)
-```
+```text
 Unit: "User authentication API with JWT"
   3-5 files, 10-20 functions, 200-500 lines of implementation.
   Takes a generator 10-20 minutes.
@@ -127,7 +127,7 @@ too small — merge it with a related unit. If you have more than 15, split it.
 ## Acceptance Criteria Authoring
 
 ### Good Criteria (testable, specific)
-```
+```text
 - POST /api/tasks with valid body returns 201 and the created task object
 - POST /api/tasks with missing title returns 400 with error message
 - GET /api/tasks?status=completed returns only completed tasks
@@ -137,7 +137,7 @@ too small — merge it with a related unit. If you have more than 15, split it.
 ```
 
 ### Bad Criteria (vague, untestable)
-```
+```text
 - API works correctly
 - UI looks good
 - Tasks can be managed
@@ -158,7 +158,7 @@ Include criteria across these dimensions:
 
 Every plan should include these overall criteria:
 
-```
+```text
 - Application installs dependencies without errors
 - Application starts dev server without errors
 - Home/landing page loads and renders within 5 seconds

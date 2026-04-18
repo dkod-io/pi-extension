@@ -9,7 +9,7 @@ sequencing, conflict resolution, and the landing pipeline.
 
 Every agent (planner, generator, evaluator) creates its own session:
 
-```
+```text
 dk --json agent connect \
   --repo "org/repo" \
   --agent-name "generator-unit-3" \
@@ -28,26 +28,26 @@ dk --json agent connect \
 ### Read Phase
 
 Use `dk --json agent context` for semantic understanding:
-```
+```text
 dk --json agent context --session $SID "createTask"
 → symbol source, callers, callees, dependencies
 ```
 
 Use `dk --json agent file-read` for raw file content:
-```
+```text
 dk --json agent file-read --session $SID --path "src/api/tasks.ts"
 → file content (overlay version if modified, base version otherwise)
 ```
 
 Use `dk --json agent file-list` for directory structure:
-```
+```text
 dk --json agent file-list --session $SID --path "src/"
 → all files under src/ with modification metadata
 ```
 
 ### Write Phase
 
-```
+```text
 dk --json agent file-write --session $SID --path "src/api/tasks.ts" <local-tmp-file>
 → new_hash, detected_changes, conflict_warnings
 ```
@@ -62,7 +62,7 @@ dk --json agent file-write --session $SID --path "src/api/tasks.ts" <local-tmp-f
 - Different symbols in the same file do NOT contend — only same-symbol writes are blocked.
 
 **If `status: "locked"` is returned:**
-```
+```text
 dk --json agent watch --session $SID \
   --filter "symbol.lock.released" --wait               # blocks until lock releases
 dk --json agent file-read --session $SID --path <p>    # read their merged code
@@ -75,7 +75,7 @@ released on `dk --json agent merge` success, `dk --json agent close`, or session
 
 ### Submit Phase
 
-```
+```text
 dk --json agent submit --session $SID --message "Implement task CRUD API"
 → status: ACCEPTED | CONFLICT, changeset_id
 ```
@@ -94,7 +94,7 @@ dk --json agent submit --session $SID --message "Implement task CRUD API"
 
 ### Verify Phase
 
-```
+```text
 dk --json agent verify --session $SID --changeset $CSID
 → stream of VerifyStepResult (lint, type-check, test, semantic)
 ```
@@ -109,7 +109,7 @@ Each step returns: status (pass/fail), output, findings[], suggestions[].
 
 ### Approve Phase
 
-```
+```text
 dk --json agent approve --session $SID --changeset $CSID
 → changeset transitions to "approved" state
 ```
@@ -118,30 +118,30 @@ Pre-condition: changeset must be in "submitted" state with no unresolved conflic
 
 ### Merge Phase
 
-```
+```text
 dk --json agent merge --session $SID --changeset $CSID -m "feat: implement task CRUD API"
 → MergeSuccess | MergeConflict | OverwriteWarning
 ```
 
 **MergeSuccess:**
-```
+```text
 { commit_hash, auto_rebased: true/false, auto_rebased_files: [...] }
 ```
 
 **MergeConflict:**
-```
+```text
 { conflicts: [{ file_path, symbols, your_agent, their_agent, conflict_type }] }
 ```
 
 **OverwriteWarning:**
-```
+```text
 { recently_merged_symbols: [{ symbol, merged_by, merged_at }] }
 → Can proceed with --force
 ```
 
 ### Push Phase
 
-```
+```text
 dk --json push [--branch <name>]
 → pr_url (when pushing to PR) OR branch_name (when --branch is passed)
 ```
@@ -158,7 +158,7 @@ ensure safe concurrent access at the engine level.
 
 ### Generator Self-Merge Flow
 
-```
+```text
 # Each generator runs this autonomously:
 dk --json agent connect ...
 dk --json agent file-write --session $SID --path <p> <tmp>      # acquires symbol locks
@@ -189,7 +189,7 @@ releases locks as soon as each generator finishes, maximizing parallelism.
 
 After all changesets are merged, run one final `dk --json agent verify` on the complete
 codebase:
-```
+```text
 dk --json agent connect --repo <repo> --agent-name "harness-verifier" --intent "Final verification"
 dk --json agent verify --session $SID
 ```
@@ -203,7 +203,7 @@ This catches integration issues that per-changeset verification might miss:
 
 The orchestrator can monitor generator progress via `dk --json agent watch`:
 
-```
+```text
 dk --json agent watch --session $SID --filter "changeset.*"
 → stream of events:
   - changeset.submitted (agent-3 submitted)
@@ -223,7 +223,7 @@ Use this to:
 Scaffolding runs in parallel with feature generators -- no need to scaffold first. dkod
 merges the scaffolding output with all feature generator outputs at the AST level.
 
-```
+```text
 dk --json agent connect --repo <repo> --agent-name "generator-scaffolding" --intent "Project scaffolding"
 dk --json agent file-write --session $SID --path "package.json" <tmp>
 dk --json agent file-write --session $SID --path "tsconfig.json" <tmp>
@@ -242,7 +242,7 @@ scaffolding files with feature code regardless of merge order.
 Generators define their own types locally instead of sharing a central type file.
 Type duplication is cheap; coordination between generators is expensive.
 
-```
+```text
 // generator-tasks defines its own types
 dk --json agent file-write --session $SID --path "src/api/tasks.ts" <tmp-with>
   interface Task { id: string; title: string; userId: string; status: TaskStatus; }
@@ -274,7 +274,7 @@ require resolution.
 ### Test Alongside Implementation
 
 A generator can write tests as part of its unit:
-```
+```text
 dk --json agent file-write --session $SID --path "src/api/tasks.ts" <tmp-impl>
 dk --json agent file-write --session $SID --path "src/api/__tests__/tasks.test.ts" <tmp-tests>
 dk --json agent submit --session $SID --message "Task API with tests"
@@ -311,7 +311,7 @@ Code review runs automatically after every `dk --json agent submit`. Two tiers:
 **Generators own the review-fix lifecycle.** After `dk --json agent submit`, each generator
 stays alive to receive both local and deep review feedback and fix issues before exiting.
 
-```
+```text
 round = 1
 dk --json agent submit --session $SID --message "<intent>"
   → response includes local review (score + findings)

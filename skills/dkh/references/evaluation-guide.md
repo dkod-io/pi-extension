@@ -30,7 +30,7 @@ the page finishes loading. A page stuck on a spinner is BROKEN, not loaded.
 
 #### chrome-devtools MCP (fallback)
 
-```
+```text
 1. navigate_page(url: "http://localhost:<port>")
 2. take_screenshot()                              → evidence: initial state (may show loading)
 3. evaluate_script(expression: `
@@ -102,7 +102,7 @@ playwright-cli execute http://localhost:5173 --script console-check.js
 
 ### Form Interaction (chrome-devtools)
 
-```
+```text
 1. navigate_page(url: "http://localhost:5173/login")
 2. take_screenshot()                              → evidence: form renders
 3. fill(selector: "#email", value: "test@test.com")
@@ -115,7 +115,7 @@ playwright-cli execute http://localhost:5173 --script console-check.js
 
 ### Form Validation (Error Path)
 
-```
+```text
 1. navigate_page(url: "http://localhost:5173/signup")
 2. click(selector: "button[type=submit]")         → submit empty form
 3. wait_for(selector: ".error-message", timeout: 3000)
@@ -126,7 +126,7 @@ playwright-cli execute http://localhost:5173 --script console-check.js
 
 ### API Testing via Script Evaluation
 
-```
+```text
 evaluate_script(expression: `
   fetch('/api/tasks', {
     method: 'POST',
@@ -139,7 +139,7 @@ evaluate_script(expression: `
 
 ### Responsive Testing
 
-```
+```text
 1. resize_page(width: 375, height: 812)           → mobile viewport
 2. take_screenshot()                              → evidence: mobile layout
 3. evaluate_script(expression: "window.getComputedStyle(document.querySelector('nav')).display")
@@ -157,7 +157,7 @@ playwright-cli screenshot http://localhost:5173 desktop.png --width 1440 --heigh
 
 ### Navigation Testing
 
-```
+```text
 1. navigate_page(url: "http://localhost:5173")
 2. click(selector: "a[href='/tasks']")
 3. wait_for(selector: ".task-list", timeout: 5000)
@@ -168,14 +168,14 @@ playwright-cli screenshot http://localhost:5173 desktop.png --width 1440 --heigh
 
 ### Performance Testing
 
-```
+```text
 lighthouse_audit(url: "http://localhost:5173", categories: ["performance"])
 → evidence: performance score, FCP, LCP, CLS metrics
 ```
 
 ### Console Error Detection
 
-```
+```text
 list_console_messages()
 → filter for type: "error"
 → evidence: list of JS errors with stack traces
@@ -183,7 +183,7 @@ list_console_messages()
 
 ### CRUD End-to-End Flow (chrome-devtools)
 
-```
+```text
 1. navigate_page(url: "http://localhost:5173/tasks")
 2. take_screenshot()                              → evidence: initial state
 

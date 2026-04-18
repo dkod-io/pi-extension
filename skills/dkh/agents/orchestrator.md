@@ -97,7 +97,7 @@ sessions will self-conflict with stale claims.
 
 ### State you must track:
 
-```
+```text
 round: 1                    # Current round (1, 2, or 3)
 plan: null                  # Set after Phase 1
 active_units: []            # All units in round 1; only failed units in rounds 2+
@@ -125,7 +125,7 @@ replan_count: 0             # Number of REPLANs executed this build (max 1)
 
 Then verify dkod is connected:
 
-```
+```text
 dk --json agent connect \
   --repo "<owner/repo from step above>" \
   --agent-name "preflight" \
@@ -134,7 +134,7 @@ dk --json agent connect \
 
 **If connect FAILS** -> STOP IMMEDIATELY. Do NOT proceed to planning or building.
 Tell the user:
-```
+```text
 "dkod is not connected to <owner/repo>. Connect it at https://app.dkod.io
 before running /dkh. The harness requires dkod for session isolation —
 it cannot operate without it."
@@ -154,7 +154,7 @@ recovery would destroy the completed work the SKILL.md flow intentionally preser
 
 For fresh `/dkh <prompt>` builds only:
 
-```
+```text
 # Fresh build — clean slate. Close all non-terminal changesets from previous runs.
 # This prevents stale sessions, orphaned claims, and false conflict_warnings.
 # SKIP THIS BLOCK if this is a /dkh continue recovery (see SKILL.md).
@@ -180,7 +180,7 @@ HAS_DESIGN_MD=false
 ```
 
 **Output detection results to the user:**
-```
+```text
 Tool detection:
   Playwright CLI: {HAS_PLAYWRIGHT ? "[found]" : "[not found — will use chrome-devtools MCP]"}
   DESIGN.md:      {HAS_DESIGN_MD ? "[found — using as design system]" : "[not found — will use frontend-design skill]"}
@@ -231,7 +231,7 @@ Proceed to Phase 1.
 
 Spawn a single planner via Pi RPC subprocess:
 
-```
+```text
 RPC subprocess: planner
   capability: planning
   effort: <planner effort from active profile>
@@ -272,7 +272,7 @@ may require manual decomposition. Do NOT proceed.
 
 Dispatch ALL generators in `active_units` simultaneously in a single message:
 
-```
+```text
 // Single message with multiple RPC subprocess dispatches:
 for each unit in active_units:
   RPC subprocess: generator
@@ -328,6 +328,10 @@ line keeps the log readable.
   (the work unit's files are already present at the current base — typically landed
   by another unit's merge or a prior salvage). Record in `merged_units` as a no-op
   success and do NOT re-dispatch — re-dispatching would loop on the same empty state.
+  **You (the orchestrator) MUST close the reported session** — per the generator
+  contract (`src/prompts/generator.md`, Step 6 empty_changeset exception), the generator
+  exits without closing on this status. Close it explicitly:
+  `dk --json agent close --session <reported session_id>`
   Output on its own line: `[unit-name] EMPTY_CHANGESET — already implemented at base. Progress: N/M done.`
 
 - **No report / crashed** -> record as failure.
@@ -350,7 +354,7 @@ current base. Treat it as done.
 - Re-dispatch. Do NOT proceed until all have reported.
 
 **If zero merges** -> bulk-close all changesets, wipe state, re-dispatch all generators.
-```
+```text
 Bash: curl -sf -X POST "https://api.dkod.io/api/repos/<owner>/<repo>/changesets/bulk-close" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $DKOD_API_KEY" \
@@ -500,7 +504,7 @@ and scores all of them. The final evaluator always handles overall/integration c
 **CRITICAL: Pass `HAS_PLAYWRIGHT` to every evaluator dispatch.** This tells the evaluator
 which browser tool to use.
 
-```
+```text
 // Group active_units into batches of 2-3 units each. Never batch_size=1 unless
 // there is only 1 unit. For N=2: one batch of 2. For N=3: one batch of 3.
 // For N=4-6: two batches. For N=7+: three batches. Target: ceil(N/3) batches.
@@ -554,8 +558,14 @@ Before proceeding, verify:
 - [ ] Every acceptance criterion has a numeric score with evidence
 - [ ] **At least one screenshot exists in the eval evidence**
 - [ ] `eval_reports` is populated
+- [ ] **Every evaluator report begins with a `tool_used:` line whose value matches the
+  `HAS_PLAYWRIGHT` flag that was passed in its dispatch.** If `HAS_PLAYWRIGHT=true` and
+  any report has `tool_used: chrome-devtools` (or vice versa), that is a compliance
+  violation per `src/prompts/evaluator.md` — reject the report and re-dispatch that
+  evaluator batch rather than proceeding. This prevents silent drift from the chosen
+  browser tool.
 
-**If gate fails** -> re-dispatch missing evaluator batch. Do NOT call `dk --json push`.
+**If gate fails** -> re-dispatch missing or non-compliant evaluator batch. Do NOT call `dk --json push`.
 **If gate passes** -> set `eval_reports = [...]`. Proceed to the SHIP phase.
 
 ---
@@ -568,7 +578,7 @@ If eval_reports is empty -> **STOP. YOU SKIPPED EVAL. GO BACK.**
 **Verdict aggregation:** Multiple evaluators (per-unit + integration) each emit an
 independent verdict. Aggregate them using the **most severe wins** rule:
 
-```
+```text
 REPLAN > RETRY > PASS
 ```
 
@@ -607,7 +617,7 @@ Read the aggregate **verdict**:
 If the PR description doesn't include eval results -> you skipped the EVAL phase.
 
 **Sync branch cleanup** (after `dk --json push` on PASS or round-3 RETRY):
-```
+```text
 git push origin --delete dkh/sync-<repo-name>
 git checkout main
 git branch -d dkh/sync-<repo-name>
@@ -619,7 +629,7 @@ git branch -d dkh/sync-<repo-name>
 
 When the SHIP phase decides to fix, explicitly reset state before the next round:
 
-```
+```text
 # ROUND TRANSITION — execute this before re-entering Phase 2:
 
 # FIRST: bulk-close all non-terminal changesets to release symbol claims.
@@ -648,7 +658,7 @@ incorrectly pass. Wipe them.
 
 When the SHIP phase chooses REPLAN (and `replan_count == 0`), reset state for a full re-plan:
 
-```
+```text
 # REPLAN TRANSITION — execute this before re-entering Phase 1:
 
 # FIRST: bulk-close all non-terminal changesets to release symbol claims.

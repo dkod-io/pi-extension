@@ -65,7 +65,7 @@ a changeset.
 
 Call `dk --json agent connect` first — all subsequent dk commands require an active session:
 
-```
+```text
 dk --json agent connect \
   --repo <owner/repo> \
   --agent-name "harness-planner" \
@@ -79,14 +79,14 @@ dk --json agent connect \
 
 Search for existing documentation in the codebase. Check these paths (first match wins):
 
-```
+```text
 PRD.md, prd.md, SPEC.md, spec.md, REQUIREMENTS.md, requirements.md,
 docs/PRD.md, docs/prd.md, docs/SPEC.md, docs/spec.md,
 docs/REQUIREMENTS.md, docs/requirements.md
 ```
 
 **Also check for DESIGN.md** (design system from awesome-design-md):
-```
+```text
 DESIGN.md, design.md, docs/DESIGN.md, docs/design.md
 ```
 
@@ -246,7 +246,7 @@ is NOT a conflict — it auto-merges. So you should split work by functions/clas
 not by files.
 
 **Good decomposition (6 units — 6 agents simultaneously):**
-```
+```text
 Unit 1: "Project scaffolding + App shell + routing"
   OWNS: App component, router config, package.json, tsconfig
   Symbols: App(), router, main entry
@@ -316,7 +316,7 @@ Symbol ownership is the ONLY structural constraint. It prevents true conflicts i
    A well-planned decomposition should produce zero true conflicts.
 
 **The result: all units dispatch simultaneously.**
-```
+```text
 Unit 1: OWNS App component, router config, package.json
 Unit 2: OWNS loginHandler, signupHandler, authMiddleware
 Unit 3: OWNS createTask, getTask, updateTask, deleteTask
@@ -346,7 +346,7 @@ in separate files owned by their respective units.
 
 **Add this section to your plan output:**
 
-```
+```text
 ## Aggregation Symbols (single-owner)
 
 | Symbol | File | Owner | Wires together |
@@ -381,7 +381,7 @@ this class of errors entirely.
 
 **Add this section to your plan output (after Aggregation Symbols):**
 
-```
+```text
 ## File Manifest
 
 | Symbol | File | Export Name | Owner |
@@ -411,7 +411,7 @@ Without shared contracts, parallel generators produce mismatches like:
 **Add a Shared Contracts section** defining exact shapes for every interface shared
 across units:
 
-```
+```text
 ## Shared Contracts
 
 ### Data Types
@@ -450,7 +450,7 @@ across units:
 
 For each work unit, define testable criteria the evaluator will check:
 
-```
+```text
 Unit 2: "User authentication API"
 Acceptance criteria:
 - POST /api/auth/signup creates a user and returns 201 with JWT token
@@ -461,7 +461,7 @@ Acceptance criteria:
 ```
 
 Also define **overall acceptance criteria** for the complete application:
-```
+```text
 Overall criteria:
 - Application starts without errors (bun run dev / python main.py)
 - Home page loads and renders correctly

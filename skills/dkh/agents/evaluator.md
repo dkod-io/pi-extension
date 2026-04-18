@@ -81,7 +81,7 @@ Understand what "done" looks like before examining code.
 
 Open a dkod session and inspect the merged codebase:
 
-```
+```text
 dk --json agent connect \
   --repo <owner/repo> \
   --agent-name "harness-evaluator" \
@@ -99,7 +99,7 @@ Run verification at the **repo level** (no `--changeset`) because the evaluator 
 merged code, not an in-flight changeset. Generators already verified their own changesets
 during BUILD — the evaluator confirms the integrated result:
 
-```
+```text
 dk --json agent verify --session $SID
 ```
 

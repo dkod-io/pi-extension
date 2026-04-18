@@ -53,7 +53,7 @@ satisfies every acceptance criterion. Submit, review, approve, and merge your ch
 
 Call `dk --json agent connect` once with your assigned agent name and intent:
 
-```
+```text
 dk --json agent connect \
   --repo <owner/repo> \
   --agent-name "<assigned name>" \
@@ -118,8 +118,8 @@ This is the contract between all generators. Following it guarantees correct imp
    ```
    dk --json agent watch --session $SID \
      --filter "symbol.lock.released" --wait --timeout-ms 60000
-       ← blocks until lock releases; other agent's next submit releases it
-   dk --json agent file-read --session $SID --path <path>     ← read the file with their submitted code
+       ← blocks until the holder's merge (or close/timeout) releases the lock
+   dk --json agent file-read --session $SID --path <path>     ← read the file with their merged code
    dk --json agent file-write --session $SID --path <path> <tmp>   ← write your symbols on top of theirs
    ```
 
@@ -150,7 +150,7 @@ engine takes care of linearization: parents merge before children.
 
 **The implementation loop:**
 
-```
+```text
 for each file in your work unit:
 
   # 1. Call dk --json agent watch to check for events from other generators
@@ -224,7 +224,7 @@ This file IS your design system — follow it directly:
 
 **Option B — No DESIGN.md (fallback to frontend-design skill):**
 If no DESIGN.md exists, invoke the `frontend-design` skill:
-```
+```text
 Skill(skill: "frontend-design")
 ```
 
@@ -305,7 +305,7 @@ In that case, skip the deep review gate entirely — local review is the only ga
 Before entering the loop, output:
 > Starting review-fix loop (max 10 rounds) — target: local >= 4/5, deep >= 4/5 (if enabled)
 
-```
+```text
 round = 1                    # the dk --json agent submit you just did
 deep_review_disabled = false # set to true if the disabled branch is taken
 deep_score = null            # set from review_result when deep review is present
@@ -392,7 +392,7 @@ findings → plan all fixes → apply all fixes → submit once.
 
 After review gates pass (or max-rounds fallback allows):
 
-```
+```text
 dk --json agent approve --session $SID --changeset $CSID
 result = dk --json agent merge --session $SID --changeset $CSID -m "<unit title>"
 ```
@@ -419,7 +419,7 @@ The `dk --json agent merge` response includes step-by-step instructions when con
 After merge (or failure), report back to the orchestrator and **exit immediately**.
 
 **Template A — Successfully merged:**
-```
+```text
 ## Generator Report: <unit title>
 
 **Status:** merged
@@ -434,7 +434,7 @@ After merge (or failure), report back to the orchestrator and **exit immediately
 ```
 
 **Template B — Blocked by symbol lock (timeout):**
-```
+```text
 ## Generator Report: <unit title>
 
 **Status:** blocked_timeout
@@ -446,7 +446,7 @@ After merge (or failure), report back to the orchestrator and **exit immediately
 ```
 
 **Template C — Review failed (couldn't meet quality gates):**
-```
+```text
 ## Generator Report: <unit title>
 
 **Status:** review_failed
@@ -458,7 +458,7 @@ After merge (or failure), report back to the orchestrator and **exit immediately
 ```
 
 **Template D — Merge conflict unresolved:**
-```
+```text
 ## Generator Report: <unit title>
 
 **Status:** conflict_unresolved
