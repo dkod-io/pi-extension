@@ -115,7 +115,7 @@ This is the contract between all generators. Following it guarantees correct imp
 
 1. **SYMBOL_LOCKED** — Another generator holds the lock on a symbol you're trying to write.
    Your write DID NOT happen. You must wait and retry:
-   ```
+   ```bash
    dk --json agent watch --session $SID \
      --filter "symbol.lock.released" --wait --timeout-ms 60000
        ← blocks until the holder's merge (or close/timeout) releases the lock
@@ -404,7 +404,7 @@ result = dk --json agent merge --session $SID --changeset $CSID -m "<unit title>
   then report as `conflict_unresolved`.
 - **MERGE_BLOCKED** → your changeset is stacked on another changeset that hasn't
   merged yet. Wait for the parent, then retry:
-  ```
+  ```bash
   dk --json agent watch --session $SID \
     --filter "changeset.merged" --wait --timeout-ms 180000
   dk --json agent merge --session $SID --changeset $CSID -m "<unit title>"   # retry

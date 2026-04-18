@@ -186,7 +186,7 @@ reaches its final, data-loaded state — not just that it renders an initial she
 2. **Detect and wait for loading to complete** — use `evaluate_script` to inspect the
    page for active loading indicators:
 
-   ```
+   ```javascript
    evaluate_script(expression: `
      (() => {
        const isActiveLoadingClass = (cls) =>

@@ -207,16 +207,34 @@ Proceed with frontend-design skill fallback. Do NOT ask the user or install anyt
 Read env at startup:
 
 - `DKOD_CODE_REVIEW` — if `1`, gate is enabled
-- `DKOD_ANTHROPIC_API_KEY` / `DKOD_OPENROUTER_API_KEY` — provider keys
+- `DKOD_ANTHROPIC_API_KEY` / `DKOD_OPENROUTER_API_KEY` — provider keys (exactly ONE must be set when the gate is enabled)
 - `DKOD_REVIEW_MIN_SCORE` — threshold (default 4)
 
-Log to the event stream exactly one of:
+**Provider-key validation logic:**
 
-- `code_review: disabled` — no gate, land pipeline uses legacy threshold 3
-- `code_review: enabled (provider=<name>, min_score=<n>)` — gate on, apply LAND-phase rules below
-- `code_review: misconfigured (flag set but no key)` — **abort** immediately with a clear message; do not launch generators
+Let `anthropic_set = DKOD_ANTHROPIC_API_KEY is present and non-empty`.
+Let `openrouter_set = DKOD_OPENROUTER_API_KEY is present and non-empty`.
 
-Output the chosen line (e.g., `"code_review: enabled (provider=anthropic, min_score=4)"`) exactly once, then proceed.
+When `DKOD_CODE_REVIEW=1`:
+
+| anthropic_set | openrouter_set | Outcome | Log line |
+|---------------|----------------|---------|----------|
+| true | false | **enabled**, provider=anthropic | `code_review: enabled (provider=anthropic, min_score=<n>)` |
+| false | true | **enabled**, provider=openrouter | `code_review: enabled (provider=openrouter, min_score=<n>)` |
+| true | true | **enabled**, provider=anthropic (anthropic wins when both are present) | `code_review: enabled (provider=anthropic, min_score=<n>)` |
+| false | false | **misconfigured** — flag set, NO provider key | `code_review: misconfigured (flag set but no key)` — abort |
+
+When `DKOD_CODE_REVIEW` is unset or not `1`:
+
+| Outcome | Log line |
+|---------|----------|
+| **disabled** | `code_review: disabled` — no gate, land pipeline uses legacy threshold 3 |
+
+Provider keys are ignored when the gate is disabled — do not warn or abort on their presence/absence.
+
+Output the chosen log line (e.g., `"code_review: enabled (provider=anthropic, min_score=4)"`)
+exactly once, then proceed. If the outcome is **misconfigured**, abort immediately with
+that exact line and do NOT launch generators.
 
 Proceed to Phase 1.
 

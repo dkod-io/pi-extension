@@ -9,7 +9,7 @@ From Anthropic's harness research:
 
 > "Tuning a standalone evaluator to be skeptical turns out to be far more tractable than
 > making a generator critical of its own work."
-
+>
 > "Agents tend to respond by confidently praising the work — even when, to a human observer,
 > the quality is obviously mediocre."
 
