@@ -292,7 +292,8 @@ first — the file you see now may include:
 
 If `dk --json agent file-write` returns `SYMBOL_LOCKED` inside the review-fix loop, another
 generator has claimed a symbol you need to touch. Wait and adapt exactly like
-Step 3 — the lock resolves in seconds once they submit.
+Step 3 — the lock resolves once the holder merges (or their session closes or
+times out), per the Lock lifecycle above. Their submit alone does NOT release it.
 
 **=== MERGE QUALITY GATES — CRITICAL ===**
 - **Local review score: must be >= 4/5** (always enforced)
